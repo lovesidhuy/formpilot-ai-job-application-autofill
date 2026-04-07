@@ -1,4 +1,4 @@
-## Readme (ready-to-paste)
+## Readme 
 
 # FormPilot AI — Job Application Autofill (Chrome extension)
 
@@ -154,6 +154,7 @@ Behavior after save: Filling order is profile → rules → AI fallback (if Olla
 - Ollama not responding: ensure Ollama is running and OLLAMA_ORIGINS is set (use the Verify curl).
 - AI timeouts: enable Basic Mode (rules-only) in Settings to skip AI.
 - Form fields not filled: site might not match manifest host_permissions — check `manifest.json` host list.
+![Adobe Express 2026-04-07 14 (1)](https://github.com/user-attachments/assets/b16495ba-0524-410b-8ec0-0949c2b1cecd)
 
 ---
 
