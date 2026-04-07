@@ -6,6 +6,7 @@ Profile-first Chrome extension that autofills job application forms using a loca
 
 ---
 
+
 ## Quick start (3 steps — no build)
 
 Prerequisites
