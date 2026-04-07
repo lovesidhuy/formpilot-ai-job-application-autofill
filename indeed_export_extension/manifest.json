@@ -1,0 +1,22 @@
+{
+  "manifest_version": 3,
+  "name": "Indeed Page Exporter",
+  "version": "1.0.1",
+  "description": "Extracts visible job/application page data from Indeed into a JSON file.",
+  "permissions": ["activeTab", "scripting"],
+  "host_permissions": [
+    "https://*.indeed.com/*",
+    "https://*.smartapply.indeed.com/*"
+  ],
+  "content_scripts": [
+    {
+      "matches": [
+        "https://*.indeed.com/*",
+        "https://*.smartapply.indeed.com/*"
+      ],
+      "js": ["content.js"],
+      "run_at": "document_idle",
+      "all_frames": true
+    }
+  ]
+}
