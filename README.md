@@ -33,7 +33,8 @@ A profile-first Chrome extension that autofills job application forms using a lo
 
 Once saved, autofill order is: **profile → rules → AI fallback** (AI only runs if Ollama is active).
 
-![Adobe Express - Adobe Express 2026-04-07 17 28 13](https://github.com/user-attachments/assets/ea671a97-d2e7-40f3-ac8f-4bb617c2cbb7)
+![Adobe Express - Screen Recording 2026-04-07 at 10 11 11 PM-5](https://github.com/user-attachments/assets/370c8e9c-2b51-41e6-a890-055f566c6464)
+
 
 ---
 
