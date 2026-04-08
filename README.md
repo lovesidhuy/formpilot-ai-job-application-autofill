@@ -44,9 +44,8 @@ Once saved, autofill order is: **profile → rules → AI fallback** (AI only ru
 3. Click **Fill Page** to autofill using your profile, rules, and AI (if enabled).
    - Use **Names Only** to fill name fields only.
    - Click **Stop** to abort if the page behaves unexpectedly.
-![Adobe Express - Adobe Express 2026-04-07 17 28 13](https://github.com/user-attachments/assets/20372eb4-0ae7-40fe-8018-d83cda7e6bee)
-
 ---
+![Adobe Express - Adobe Express 2026-04-07 17 29 58](https://github.com/user-attachments/assets/22e708f3-43d9-4929-89cf-bd64b7e14ea2)
 
 ## Ollama & Settings
 
