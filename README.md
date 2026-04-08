@@ -36,6 +36,8 @@ Once saved, autofill order is: **profile → rules → AI fallback** (AI only ru
 ![Adobe Express - Screen Recording 2026-04-07 at 10 11 11 PM-5](https://github.com/user-attachments/assets/370c8e9c-2b51-41e6-a890-055f566c6464)
 
 TEST IF OLLAMA ACTIVE
+
+
 ![Adobe Express - Screen Recording 2026-04-07 at 10 11 11 PM-6](https://github.com/user-attachments/assets/f37e4d24-efe8-4581-8884-866d15e05ca8)
 
 
