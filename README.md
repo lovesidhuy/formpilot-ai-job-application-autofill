@@ -1,4 +1,4 @@
-# FormPilot AI — Job Application Autofill
+# FormPilot AI — Job Application Autofill 95% automation on Indeed, Greenhouse, Lever and HTML pages + Human takeover
 
 A profile-first Chrome extension that autofills job application forms using a locally stored profile and a lightweight rule engine. Ollama (local LLM) is used only as an AI fallback for open-ended answers — all profile data stays on your machine.
 
