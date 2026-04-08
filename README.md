@@ -45,7 +45,7 @@ Once saved, autofill order is: **profile → rules → AI fallback** (AI only ru
    - Use **Names Only** to fill name fields only.
    - Click **Stop** to abort if the page behaves unexpectedly.
 ---
-![Adobe Express - Adobe Express 2026-04-07 17 29 58](https://github.com/user-attachments/assets/22e708f3-43d9-4929-89cf-bd64b7e14ea2)
+
 
 ## Ollama & Settings
 
@@ -55,6 +55,7 @@ Once saved, autofill order is: **profile → rules → AI fallback** (AI only ru
 - If Ollama is not running or CORS is not configured, AI features will be skipped — profile and rules still work.
 
 ---
+![Adobe Express - Screen Recording 2026-04-07 at 2 07 00 PM copy-4](https://github.com/user-attachments/assets/0c1ec816-9cba-48ef-a97c-c5be619dba1c)
 
 ## CORS Setup (Required for Ollama)
 
