@@ -1,176 +1,123 @@
-## Readme 
+# FormPilot AI — Job Application Autofill
 
-# FormPilot AI — Job Application Autofill (Chrome extension)
-
-Profile-first Chrome extension that autofills job application forms using a locally stored profile and a lightweight rule engine. Ollama (local) is used only as an AI fallback for open-ended answers — all profile data stays on your machine.
+A profile-first Chrome extension that autofills job application forms using a locally stored profile and a lightweight rule engine. Ollama (local LLM) is used only as an AI fallback for open-ended answers — all profile data stays on your machine.
 
 ---
 
+## Quick Start
 
-## Quick start (3 steps — no build)
-
-Prerequisites
+**Prerequisites**
 - Chrome (desktop)
-- Ollama installed locally only if you want AI help (optional)
-- Plain-text copy of your resume (recommended for fast extraction)
+- Ollama installed locally — only needed for AI fallback (optional)
+- Plain-text copy of your resume (recommended for fast profile extraction)
 
-Install and run
-1. Load extension in Chrome
-   - Open chrome://extensions
-   - Enable Developer mode
-   - Click **Load unpacked** and select this repository folder (the folder that contains `manifest.json`)
-2. (Optional) Start Ollama with CORS allowed (required only for AI features) — see CORS section below
-3. Click the extension icon → run the onboarding wizard → Save your profile
+**Install**
+1. Open `chrome://extensions`
+2. Enable **Developer mode**
+3. Click **Load unpacked** and select the folder that contains `manifest.json`
 
-Note: This is a plain Chrome extension — there is no `npm install` or other build step required.
+> No `npm install` or build step required.
 
 ---
 
-## 🔐 CORS Setup (Required for Ollama)
+## Profile Setup
 
-Chrome extensions run on a different origin, so Ollama must allow CORS.
+1. Click the extension icon and select **Setup** to launch the onboarding wizard.
+2. Paste your resume into the resume field and click **Extract with AI** — or click **Fill manually** to type everything yourself.
+3. Review the extracted fields and correct any errors. Pay special attention to:
+   - Work authorization and visa sponsorship (must be set manually)
+   - City, Province, Country, Postal code
+   - Desired salary and years of experience
+   - Name, email, phone, LinkedIn/portfolio URLs, headline, summary, education, and skills
+4. Click **Save Profile**.
 
-### macOS
-```bash
-launchctl setenv OLLAMA_ORIGINS "*"
-killall ollama
-ollama serve
-```
+Once saved, autofill order is: **profile → rules → AI fallback** (AI only runs if Ollama is active).
 
-### Linux
-
-```bash
-export OLLAMA_ORIGINS="*"
-ollama serve
-```
-
-### Windows (PowerShell)
-
-```powershell
-$env:OLLAMA_ORIGINS="*"
-ollama serve
-```
+![Adobe Express - Adobe Express 2026-04-07 17 28 13](https://github.com/user-attachments/assets/ea671a97-d2e7-40f3-ac8f-4bb617c2cbb7)
 
 ---
 
-### 🔍 Verify
+## Usage
 
-```bash
-curl http://127.0.0.1:11434/api/tags
-```
-
----
-
-### ⚠️ Note
-
-* Required for Chrome extension → Ollama communication  
-* Only affects local machine usage
+1. Open a supported job application page.
+2. Click the extension icon.
+3. Click **Fill Page** to autofill using your profile, rules, and AI (if enabled).
+   - Use **Names Only** to fill name fields only.
+   - Click **Stop** to abort if the page behaves unexpectedly.
+![Adobe Express - Adobe Express 2026-04-07 17 28 13](https://github.com/user-attachments/assets/20372eb4-0ae7-40fe-8018-d83cda7e6bee)
 
 ---
 
-Here’s a **clean, short, ready-to-paste README section** 👇
-
-````md
-## 🔐 CORS Setup (Required for Ollama)
-
-Chrome extensions run on a different origin, so Ollama must allow CORS.
-
-### macOS
-```bash
-launchctl setenv OLLAMA_ORIGINS "*"
-killall ollama
-ollama serve
-````
-
-### Linux
-
-```bash
-export OLLAMA_ORIGINS="*"
-ollama serve
-```
-
-### Windows (PowerShell)
-
-```powershell
-$env:OLLAMA_ORIGINS="*"
-ollama serve
-```
-
----
-
-### 🔍 Verify
-
-```bash
-curl http://127.0.0.1:11434/api/tags
-```
-
----
-
-### ⚠️ Note
-
-* Required for Chrome extension → Ollama communication
-* Only affects local machine usage
-
-```
-````
-
----
-
-## Profile setup (DRY — exact steps)
-
-1. Open the extension and click **setup** to start the onboarding wizard.  
-2. Paste your resume into the resume field and click **Extract with AI** (or click **Fill manually** to type everything).  
-3. Verify and edit extracted fields, then save:
-   - Required checks: Work authorization (manually set), Visa sponsorship (manually set), City/Province/Country/Postal, Desired salary, Years of experience.
-   - Review: Name, email, phone, LinkedIn/portfolio URLs, headline, summary, education, skills.
-4. Click **Save Profile**. Profile is stored locally and used to fill forms.
-
-Behavior after save: Filling order is profile → rules → AI fallback (if Ollama is running and enabled).
-
----
-
-## How to use
-
-- Open a supported job application page.
-- Click the extension icon.
-- Click **Fill Page** to autofill using profile and rules (AI used only when needed).
-- Use **Names Only** to only fill name fields.
-- Click **Stop** to abort if the page behaves unexpectedly.
-
----
-
-## Ollama / Settings
+## Ollama & Settings
 
 - Default API URL: `http://localhost:11434`
-- Default model example: `gemma3:1b`
-- In Settings tab set API base URL and model name, click **Test** to list models and confirm connectivity.
-- If Ollama is not running or CORS not set, AI features will fail but profile+rules still work.
+- Default model: `gemma3:1b` (configurable)
+- Go to the **Settings** tab to set the API base URL and model name, then click **Test** to verify connectivity.
+- If Ollama is not running or CORS is not configured, AI features will be skipped — profile and rules still work.
 
 ---
 
-## Troubleshooting (concise)
+## CORS Setup (Required for Ollama)
 
-- Extension won’t load: When using **Load unpacked**, select the folder that contains `manifest.json`.
-- Ollama not responding: ensure Ollama is running and OLLAMA_ORIGINS is set (use the Verify curl).
-- AI timeouts: enable Basic Mode (rules-only) in Settings to skip AI.
-- Form fields not filled: site might not match manifest host_permissions — check `manifest.json` host list.
-![Adobe Express 2026-04-07 14 (1)](https://github.com/user-attachments/assets/b16495ba-0524-410b-8ec0-0949c2b1cecd)
+Chrome extensions run on a different origin, so Ollama must be started with CORS allowed.
+
+### macOS
+```bash
+launchctl setenv OLLAMA_ORIGINS "*"
+killall ollama
+ollama serve
+```
+
+### Linux
+```bash
+export OLLAMA_ORIGINS="*"
+ollama serve
+```
+
+### Windows (PowerShell)
+```powershell
+$env:OLLAMA_ORIGINS="*"
+ollama serve
+```
+
+**Verify it's working:**
+```bash
+curl http://127.0.0.1:11434/api/tags
+```
+
+> This only affects local machine usage.
 
 ---
 
-## Privacy & security
+## Troubleshooting
 
-- Profile and question→answer memory are stored locally in Chrome extension storage (no cloud by default).  
-- Work authorization & sponsorship fields are rule-protected and never changed by AI.  
-- If you use Ollama, it runs locally — ensure models you run are trusted.
-
----
-
-## Files & editing (dev quick notes)
-
-- Key files: `manifest.json`, `popup.html`, `onboarding.html`, `background.js`, `content.js`, `popup.js`, `profile.js`, `rules.js`.  
-- To modify behavior: edit these files and reload the extension in chrome://extensions.
+| Problem | Solution |
+|---|---|
+| Extension won't load | Select the folder containing `manifest.json`, not a subfolder |
+| Ollama not responding | Ensure Ollama is running and `OLLAMA_ORIGINS` is set; run the verify `curl` above |
+| AI timeouts | Enable **Basic Mode** (rules-only) in Settings to skip AI entirely |
+| Form fields not filled | The site may not be in `manifest.json`'s `host_permissions` — check and add it |
 
 ---
 
-If you want, I can produce a strictly minimal "Release" README (2–3 lines) or a one-page troubleshooting checklist. Which would you prefer?
+## Privacy & Security
+
+- Profile data and question→answer memory are stored locally in Chrome extension storage — nothing is sent to the cloud by default.
+- Work authorization and visa sponsorship fields are rule-protected and cannot be changed by AI.
+- Ollama runs entirely on your machine — ensure any models you use are from trusted sources.
+
+---
+
+## File Reference
+
+| File | Purpose |
+|---|---|
+| `manifest.json` | Extension config and host permissions |
+| `popup.html` / `popup.js` | Extension popup UI |
+| `onboarding.html` | Profile setup wizard |
+| `background.js` | Service worker / background logic |
+| `content.js` | Form detection and filling |
+| `profile.js` | Profile storage and retrieval |
+| `rules.js` | Rule engine for field matching |
+
+To modify behavior, edit the relevant file and reload the extension at `chrome://extensions`.
