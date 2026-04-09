@@ -882,18 +882,24 @@
    * Map the new extractor's field shape → the shape background.js expects.
    * Preserves __rawField so we can apply answers to the original targets later.
    */
+  // FIX P2-7 — pass rich capture context to AI so it has section, validation, role, required
   const mapExtractedFieldForAI = (field) => {
     const mainTarget = field.targets?.[0] || {};
     return {
-      label:        field.question || '',
-      name:         mainTarget.name || field.dom?.name || '',
-      placeholder:  field.dom?.placeholder || '',
-      type:         field.type || mainTarget.type || '',
-      tag:          field.tag  || mainTarget.tag  || '',
-      options:      (field.options || []).map(opt => opt.label || opt.value).filter(Boolean),
-      currentValue: field.answer || '',
-      required:     !!field.required,
-      __rawField:   field,
+      label:         field.question || '',
+      name:          mainTarget.name || field.dom?.name || '',
+      placeholder:   field.dom?.placeholder || '',
+      type:          field.type || mainTarget.type || '',
+      tag:           field.tag  || mainTarget.tag  || '',
+      options:       (field.options || []).map(opt => opt.label || opt.value).filter(Boolean),
+      currentValue:  field.answer || '',
+      required:      !!field.required,
+      section:       field.section || '',
+      validationMsg: field.validationMessage || '',
+      domRole:       field.dom?.role || '',
+      ariaInvalid:   field.dom?.ariaInvalid || '',
+      _pageUrl:      location.pathname,
+      __rawField:    field,
     };
   };
 
@@ -933,14 +939,23 @@
 
   /**
    * Get AI answers, then zip them back onto the extracted fields as .aiAnswer / .aiSource.
+   * FIX P2-8 — spread original field first so targets[], options[].selector, followups[] are preserved.
+   * FIX P1-5 — split comma-separated AI answers into arrays for checkbox_group types.
    */
   const resolveAnswersFromBackground = async (extractedFields) => {
     const aiAnswers = await getAiAnswersForExtractedFields(extractedFields);
     return extractedFields.map((field, i) => {
       const resolved = aiAnswers[i] || {};
+      let finalAnswer = resolved.answer || '';
+
+      // FIX P1-5 — AI returns "Label A, Label B" for checkbox groups; split into array
+      if (field.type === 'checkbox_group' && typeof finalAnswer === 'string' && finalAnswer) {
+        finalAnswer = finalAnswer.split(',').map(s => s.trim()).filter(Boolean);
+      }
+
       return {
-        ...field,
-        aiAnswer: resolved.answer || '',
+        ...field,              // full original — targets[], options[].selector, followups[]
+        aiAnswer: finalAnswer,
         aiSource: resolved.source || 'unknown',
       };
     });

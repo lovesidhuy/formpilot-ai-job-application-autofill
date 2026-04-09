@@ -169,6 +169,8 @@ function getFieldCacheKey(field) {
     placeholder: (field.placeholder || '').trim().toLowerCase(),
     type:        (field.type        || '').trim().toLowerCase(),
     options:     (field.options     || []).map(x => x.trim().toLowerCase()).sort(),
+    // FIX P3-10 — scope cache to page URL so job A answers don't bleed into job B
+    url:         (field._pageUrl    || '').slice(0, 60),
   });
 }
 
@@ -272,6 +274,18 @@ CRITICAL:
 - If identity data is missing → return __SKIP__.
 - If asked whether you have worked for this company before → answer "No".
 
+CHECKBOX GROUPS:
+- checkbox_group fields → respond with a comma-separated list of EXACT option labels that apply.
+  Only select options you genuinely have experience with based on profile skills.
+  If none clearly apply, select the single most general/foundational option only.
+  Do NOT output a single word or a sentence — output the exact label(s) only.
+
+CONDITIONAL FOLLOW-UPS:
+- Fields prefixed with "If you answered Yes..." or "If the above applies...":
+  Answer ALL parts asked (e.g. "indicate the year, institution, and program").
+  If the condition does not apply to you, respond "N/A".
+  NEVER answer a multi-part conditional follow-up with a single word.
+
 INDEED / SMARTAPPLY NOTE:
 - Radio/select questions about commute, visa, work authorization, background checks,
   drug tests, diversity, age, criminal history, and schedule are handled automatically
@@ -293,6 +307,12 @@ function buildUserMessage(field) {
     msg += `\nAvailable options (choose ONE exactly): ${JSON.stringify(field.options)}`;
   if (field.currentValue)
     msg += `\nCurrent value (skip if already correct): "${field.currentValue}"`;
+  // FIX P2-9 — include rich context from export extension capture
+  if (field.required)      msg += `\nRequired: true`;
+  if (field.section)       msg += `\nForm section: "${field.section}"`;
+  if (field.validationMsg) msg += `\nValidation error shown: "${field.validationMsg}"`;
+  if (field.domRole)       msg += `\nDOM role: "${field.domRole}"`;
+  if (field.ariaInvalid === 'true') msg += `\nNote: field is currently marked invalid by the page`;
   return msg;
 }
 
@@ -422,7 +442,13 @@ async function generateAnswers(fields, profile, basicMode) {
     const questionKey = (field.label || field.name || '').trim().toLowerCase().slice(0, 120);
     if (persistentMemory[questionKey]) {
       const m = persistentMemory[questionKey];
-      return { field, answer: m.answer, source: m.source + '+memory', needsAi: false };
+      // FIX P3-11 — enforce 7-day TTL on persistent memory entries
+      const MAX_MEMORY_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+      if ((Date.now() - (m.ts || 0)) < MAX_MEMORY_AGE_MS) {
+        return { field, answer: m.answer, source: m.source + '+memory', needsAi: false };
+      }
+      // Entry is expired — delete it and fall through to AI
+      delete persistentMemory[questionKey];
     }
 
     const cacheKey = getFieldCacheKey(field);

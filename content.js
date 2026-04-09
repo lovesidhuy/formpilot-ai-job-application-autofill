@@ -1,10 +1,14 @@
-// QuickFill AI – content.js v5.1
-// Changes over v5.0:
-// - harvestIndeedNamedCheckboxGroups: added wrapping-label fallback for option text extraction
-// - applyAnswer checkbox-group: support comma-separated multi-answer strings from AI
-// - applyAnswer checkbox-group: fixed single-answer matching to not over-aggressively uncheck
-// - applyAnswer checkbox-group: improved Yes/No fallback and first-option fallback
-// - All other cross-platform behaviour preserved
+// QuickFill AI – content.js v5.2
+// Changes over v5.1:
+// - Fix 1: mapExtractedFieldForAI now detects experience-select fields and tags
+//   them as type:'number' so rules.js resolveRuleField → estimateExperienceYears()
+//   handles them instead of sending to AI. Preserves _originalType for fill path.
+// - Fix 2: findExMatchingOption step 5 replaced with range-aware numeric matcher
+//   (handles "1 to 2 years", "3 - 5 years", "Less than 1 year", "6+ years", etc.)
+//   Step 6 word-overlap now filters words ≤ 3 chars to reduce noise.
+// - Fix 3: applyAnswerToField select branch gets belt-and-suspenders experience
+//   fallback — if no match and question is about years, re-runs range match with
+//   the numeric value directly before logging the warning.
 
 'use strict';
 
@@ -254,7 +258,7 @@ function pickChoiceByRules(questionLower, options) {
   if (/background check|criminal record check|screening|consent to a check/.test(q))
     return pick('yes', 'i consent', 'agree', 'authorize');
   
-  // Add this block BEFORE the existing drug test rule in pickChoiceByRules():
+  // Pre-employment / mandatory tests
   if (/pre.?employment\s+test|mandatory\s+test|medical\s+test|drug.*alcohol|health.*safety.*test/i.test(q))
     return pick('yes', 'i consent', 'agree', 'authorize');
 
@@ -295,18 +299,37 @@ function pickChoiceByRules(questionLower, options) {
     return pick('yes', 'oui');
 
   // Previous employment at this company
-  if (/ever worked for|previously worked for|have you worked at|ever been employed by|formerly employed by|worked at any of|previously employed by|ever employed by|work for any of/.test(q))
+  if (/ever worked for|previously worked for|have you worked at|ever been employed by|formerly employed by|worked at any of|previously employed by|ever been employed by|ever employed by|work for any of/.test(q))
     return pick('no', 'non');
 
-  // "Have you ever been an employee at [company]?" — prefer "never worked" option
+  // "Have you ever been an employee at [company]?"
   if (/ever been an employee|been an employee at|have you ever been.*employee/.test(q))
     return pick('no, i have never', 'never worked', 'never been', 'i have never', 'no');
+
+  // Currently employed
+  if (/currently employed (with|at|by|for)|are you (currently|presently) employed/.test(q))
+    return pick('no', 'non');
+
+  // Former employee / ex-employee
+  if (/\bformer\b.*\bemployee\b|\bex.?employee\b|former staff/.test(q))
+    return pick('no, i have never', 'never worked', 'never been', 'i have never', 'no');
+
+  // Were you referred
+  if (/were you referred|referred to (the|this) position|referred by (a |an )?(current |existing )?employee/.test(q)) {
+    const lowers = options.map(([, lbl]) => lbl.toLowerCase().trim());
+    const isYesNo = lowers.every(l => /^(yes|no|oui|non)$/.test(l));
+    if (isYesNo || !options.length) return pick('no', 'non');
+  }
+
+  // Do you know anyone that works
+  if (/do you know anyone (that|who) works|know (of )?anyone.*work(s| for)|know anyone that works/.test(q))
+    return pick('no', 'non');
 
   // Availability / schedule / office patterns
   if (/available to work|work evenings|work weekends|work overtime|flexible schedule|work on weekends|work.*office|from the office|in office|in the office|office.*days|days.*per week|days a week|hybrid|3x per week|two days|three days|three times per week|tuesdays|wednesdays|thursdays|\bonsite\b/.test(q))
     return pick('yes', 'oui');
 
-  // "Are you able to work full-time onsite?" — prefer locally-based, not relocation
+  // Full-time onsite
   if (/\bonsite\b|full.?time onsite|work.*on.?site|able to work.*onsite/.test(q))
     return pick('locally based', 'onsite (locally', 'yes');
 
@@ -333,7 +356,7 @@ function pickChoiceByRules(questionLower, options) {
     return options[0]?.[0] || null;
   }
 
-  // Pure Yes/No — defer to AI (avoids wrong default)
+  // Pure Yes/No — defer to AI
   const lowers = options.map(([, lbl]) => lbl.toLowerCase().trim());
   const isYesNo = lowers.every(l => /^(yes|no|oui|non|true|false)$/.test(l));
   if (isYesNo) return null;
@@ -460,11 +483,9 @@ function harvestIndeedNamedCheckboxGroups(seen) {
   }
 
   for (const [name, boxes] of groups) {
-    if (boxes.length < 2) continue; // only treat grouped checkbox questions as fields
+    if (boxes.length < 2) continue;
     if (boxes.some(b => seen.has(b))) continue;
 
-    // FIX: added wrapping-label fallback so Indeed checkboxes without a
-    // separate <label for="..."> still get human-readable option text.
     const options = boxes.map(b => {
       const bid     = b.getAttribute('id') || '';
       const lblEl   = bid ? document.querySelector(`label[for="${CSS.escape(bid)}"]`) : null;
@@ -843,6 +864,725 @@ function findCustomRadioGroupByName(name) {
   return null;
 }
 
+// ─── Export-extension field capture primitives ────────────────────────────
+
+const isElement = (n) => n instanceof Element;
+
+const cleanText = (v) => (v || '').replace(/\s+/g, ' ').trim();
+
+const cssPath = (el) => {
+  if (!isElement(el)) return '';
+  try {
+    if (el.id) return `#${CSS.escape(el.id)}`;
+    const parts = [];
+    let cur = el;
+    while (isElement(cur) && parts.length < 8) {
+      let sel = cur.nodeName.toLowerCase();
+      if (cur.classList && cur.classList.length)
+        sel += '.' + Array.from(cur.classList).slice(0, 2).map(c => CSS.escape(c)).join('.');
+      const parent = cur.parentElement;
+      if (parent) {
+        const siblings = Array.from(parent.children).filter(c => c.nodeName === cur.nodeName);
+        if (siblings.length > 1) sel += `:nth-of-type(${siblings.indexOf(cur) + 1})`;
+      }
+      parts.unshift(sel);
+      cur = cur.parentElement;
+    }
+    return parts.join(' > ');
+  } catch (_) { return ''; }
+};
+
+const EX_JUNK = ['search', 'captcha', 'recaptcha', 'save and close', 'continue', 'tell us more'];
+const EX_OPTION_ONLY = /^(yes|no|other|select an option|canada|usa|another country|annually|hourly|monthly|weekly)$/i;
+
+const getExFieldset      = (el) => isElement(el) ? (el.closest('fieldset') || null) : null;
+const getExQuestionItem  = (el) => isElement(el) ? (el.closest('.ia-Questions-item') || null) : null;
+const getExLegendText    = (fs) => {
+  if (!isElement(fs)) return '';
+  const leg = fs.querySelector('legend [data-testid*="-label"]') || fs.querySelector('legend');
+  return cleanText(leg?.innerText || leg?.textContent || '');
+};
+
+function getExQuestionContainer(el) {
+  if (!isElement(el)) return el;
+  return getExFieldset(el) || getExQuestionItem(el) || el.closest('[id^="q_"]') || el.closest('form') || el;
+}
+
+function cleanExQuestionText(text) {
+  const t = cleanText(text || '');
+  if (!t) return '';
+  const seen = new Set();
+  const lines = t.split('\n').map(cleanText).filter(Boolean).filter(line => {
+    const key = line.toLowerCase();
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  }).filter(l => !EX_OPTION_ONLY.test(l)).filter(l => !EX_JUNK.some(j => l.toLowerCase().includes(j)));
+  if (!lines.length) return '';
+  const best =
+    lines.find(l => /\?\s*\*?$/.test(l)) ||
+    lines.find(l => /\*\s*$/.test(l))    ||
+    lines.find(l => /experience|hear|onsite|legally|country|city|salary|start|employee|privacy|consent|certify|currency|linkedin/i.test(l)) ||
+    lines[0];
+  return cleanText(best).replace(/\s+(Yes|No|Other)(\s+(Yes|No|Other))*$/i, '').trim();
+}
+
+function getExQuestionText(el) {
+  if (!isElement(el)) return '';
+  const fs = getExFieldset(el);
+  const legendText = cleanExQuestionText(getExLegendText(fs));
+  if (legendText && !EX_OPTION_ONLY.test(legendText)) return legendText;
+  const item = getExQuestionItem(el);
+  if (item) {
+    for (const c of [
+      item.querySelector('legend'),
+      item.querySelector('[data-testid*="-label"]'),
+      item.querySelector('[role="heading"]'),
+      item.querySelector('h1,h2,h3,h4,h5,h6'),
+      item.querySelector('label'),
+    ].filter(Boolean)) {
+      const txt = cleanExQuestionText(c.innerText || c.textContent || '');
+      if (txt && !EX_OPTION_ONLY.test(txt) && txt.split(' ').length > 3 && txt.length < 120) return txt;
+    }
+  }
+  return '';
+}
+
+function findExLabel(el) {
+  if (!isElement(el)) return '';
+  const direct = cleanText(
+    el.labels?.[0]?.innerText ||
+    (el.id && document.querySelector(`label[for="${CSS.escape(el.id)}"]`)?.innerText) ||
+    el.getAttribute('aria-label') || el.getAttribute('placeholder') || ''
+  );
+  if (direct && !EX_OPTION_ONLY.test(direct)) return direct;
+  const qt = getExQuestionText(el);
+  if (qt) return qt;
+  let node = el.parentElement;
+  while (isElement(node) && node !== document.body) {
+    const txt = cleanExQuestionText(node.innerText || '');
+    if (txt && txt.length < 120 && txt.split(' ').length > 3 && !EX_OPTION_ONLY.test(txt)) return txt;
+    node = node.parentElement;
+  }
+  return cleanText(el.name || el.id || el.type || el.tagName);
+}
+
+function getExValidationMessage(el) {
+  const describedBy = el.getAttribute('aria-describedby');
+  if (describedBy) {
+    const txt = describedBy.split(/\s+/).map(id => document.getElementById(id))
+      .filter(Boolean).map(n => cleanText(n.innerText || n.textContent || '')).filter(Boolean).join(' | ');
+    if (txt) return txt;
+  }
+  const inv = el.closest('[aria-invalid="true"], .icl-TextInput-error, [class*="error"], [class*="invalid"]');
+  return inv ? cleanText(inv.innerText).slice(0, 300) : '';
+}
+
+function getExSection(el) {
+  const s = el.closest('[data-testid*="section"], section, form, main');
+  if (!s) return '';
+  return cleanText(s.querySelector('h1,h2,h3,h4,h5,h6,[role="heading"]')?.innerText || '');
+}
+
+const isExRequired = (el, question) =>
+  !!(el.required || el.getAttribute('aria-required') === 'true' || /\*\s*$/.test(question || ''));
+
+const isExConsentBlock = (fs, question) => {
+  if (!isElement(fs)) return false;
+  const txt = `${question} ${cleanText(fs.innerText || '')}`;
+  return /privacy|consent|certif|acknowledg|background check|credit check|personal information/i.test(txt) && txt.length > 120;
+};
+
+const getExOptionLabel = (input) =>
+  cleanText(input.closest('label')?.innerText) ||
+  cleanText((input.id && document.querySelector(`label[for="${CSS.escape(input.id)}"]`)?.innerText) || '') ||
+  cleanText(input.value);
+
+const isExFakeCombo = (el) => {
+  if (!isElement(el)) return false;
+  const role = (el.getAttribute('role') || '').toLowerCase();
+  const popup = (el.getAttribute('aria-haspopup') || '').toLowerCase();
+  return role === 'combobox' || popup === 'listbox';
+};
+
+function isRealQuestionField(el) {
+  if (!isElement(el) || !isVisible(el)) return false;
+  if (el.disabled || el.readOnly) return false;
+  const tag  = el.tagName.toLowerCase();
+  const type = (el.getAttribute('type') || '').toLowerCase();
+  const allowed = ['input', 'textarea', 'select'].includes(tag) || isExFakeCombo(el);
+  if (!allowed) return false;
+  if (['hidden', 'submit', 'button', 'reset', 'image', 'file'].includes(type)) return false;
+  const blob = [
+    findExLabel(el), el.getAttribute('name'), el.id,
+    el.getAttribute('placeholder'), el.getAttribute('data-testid'),
+  ].join(' ').toLowerCase();
+  return !EX_JUNK.some(w => blob.includes(w));
+}
+
+function exDomSnapshot(el, container) {
+  return {
+    selector:        cssPath(el),
+    id:              el.id || '',
+    name:            el.getAttribute('name') || el.name || '',
+    role:            el.getAttribute('role') || '',
+    placeholder:     el.getAttribute('placeholder') || '',
+    ariaInvalid:     el.getAttribute('aria-invalid') || '',
+    autocomplete:    el.getAttribute('autocomplete') || '',
+    inputMode:       el.getAttribute('inputmode') || '',
+    visible:         isVisible(el),
+    disabled:        !!el.disabled,
+    readOnly:        !!el.readOnly,
+  };
+}
+
+// ── Harvesters ─────────────────────────────────────────────────────────────
+
+function collectRadioGroup(el) {
+  const name = el.name;
+  if (!name) return null;
+  const group = Array.from(document.querySelectorAll(
+    `input[type="radio"][name="${CSS.escape(name)}"]`
+  )).filter(isRealQuestionField);
+  if (!group.length) return null;
+  const first     = group[0];
+  const container = getExQuestionContainer(first);
+  const question  = getExLegendText(getExFieldset(first)) || getExQuestionText(first) || findExLabel(first);
+  if (!question || question.length < 5) return null;
+  const options = group.map(r => ({
+    label:    getExOptionLabel(r),
+    value:    r.value || '',
+    checked:  !!r.checked,
+    selector: cssPath(r),
+    id:       r.id || '',
+    name:     r.name || '',
+  }));
+  return {
+    question, type: 'radio', tag: 'input',
+    required: isExRequired(first, question),
+    answer:   options.find(o => o.checked)?.label || '',
+    options,
+    dom:              exDomSnapshot(first, container),
+    section:          getExSection(first),
+    validationMessage: getExValidationMessage(first),
+    targets: group.map(r => ({ selector: cssPath(r), id: r.id || '', name: r.name || '', tag: 'input', type: 'radio' })),
+  };
+}
+
+function collectCheckboxGroup(el) {
+  const name = el.name;
+  if (!name) return null;
+  const group = Array.from(document.querySelectorAll(
+    `input[type="checkbox"][name="${CSS.escape(name)}"]`
+  )).filter(isRealQuestionField);
+  if (!group.length) return null;
+  const first     = group[0];
+  const container = getExQuestionContainer(first);
+  const fs        = getExFieldset(first);
+  const question  = getExLegendText(fs) || getExQuestionText(first) || findExLabel(first);
+  if (!question || question.length < 5) return null;
+  const consent   = isExConsentBlock(fs, question);
+  const options = group.map(c => ({
+    label:    getExOptionLabel(c),
+    value:    c.value || '',
+    checked:  !!c.checked,
+    selector: cssPath(c),
+    id:       c.id || '',
+    name:     c.name || '',
+  }));
+  return {
+    question, type: consent ? 'consent_checkbox_group' : 'checkbox_group', tag: 'input',
+    required: group.some(i => i.required) || isExRequired(first, question),
+    answer:   options.filter(o => o.checked).map(o => o.label || o.value),
+    options,
+    dom:              exDomSnapshot(first, container),
+    section:          getExSection(first),
+    validationMessage: getExValidationMessage(first),
+    targets: group.map(c => ({ selector: cssPath(c), id: c.id || '', name: c.name || '', tag: 'input', type: 'checkbox' })),
+  };
+}
+
+function collectNativeSelect(el) {
+  const question  = findExLabel(el);
+  const container = getExQuestionContainer(el);
+  const options = Array.from(el.options)
+    .map((o, idx) => ({ index: idx, label: cleanText(o.textContent), value: o.value, selected: o.selected }))
+    .filter(o => o.label || o.value);
+  return {
+    question, type: 'select', tag: 'select',
+    required: isExRequired(el, question),
+    answer:   el.value || '',
+    options,
+    dom:              exDomSnapshot(el, container),
+    section:          getExSection(el),
+    validationMessage: getExValidationMessage(el),
+    targets: [{ selector: cssPath(el), id: el.id || '', name: el.name || '', tag: 'select', type: 'select' }],
+  };
+}
+
+function collectFakeCombobox(el) {
+  const question  = findExLabel(el);
+  const container = getExQuestionContainer(el);
+  const options = Array.from(container.querySelectorAll('[role="option"], option'))
+    .map((n, idx) => ({
+      index: idx,
+      label: cleanText(n.innerText || n.textContent || ''),
+      value: n.getAttribute('data-value') || n.getAttribute('value') || cleanText(n.innerText || n.textContent || ''),
+      selected: n.getAttribute('aria-selected') === 'true',
+    })).filter(o => o.label || o.value);
+  return {
+    question, type: 'select', tag: el.tagName.toLowerCase(),
+    required: isExRequired(el, question),
+    answer:   cleanText(el.innerText || el.textContent || '') || el.getAttribute('aria-label') || '',
+    options,
+    dom:              exDomSnapshot(el, container),
+    section:          getExSection(el),
+    validationMessage: getExValidationMessage(el),
+    targets: [{ selector: cssPath(el), id: el.id || '', name: el.getAttribute('name') || '', tag: el.tagName.toLowerCase(), type: 'select' }],
+  };
+}
+
+function looksNumericField(el, question) {
+  const type = (el.getAttribute('type') || '').toLowerCase();
+  const min = el.getAttribute('min'), max = el.getAttribute('max'), step = el.getAttribute('step');
+  if (type === 'number') return true;
+  if (/how many|years of|experience|amount|salary/i.test(question || '')) return true;
+  if ((min && !Number.isNaN(Number(min))) || (max && !Number.isNaN(Number(max)))) return true;
+  if (step && step !== 'any' && !Number.isNaN(Number(step))) return true;
+  const validMsg = getExValidationMessage(el).toLowerCase();
+  if (/valid number|no decimals|must be a number|enter a number|numeric/i.test(validMsg)) return true;
+  return false;
+}
+
+function collectSingleField(el) {
+  const tag = el.tagName.toLowerCase();
+  if (tag === 'select')    return collectNativeSelect(el);
+  if (isExFakeCombo(el))   return collectFakeCombobox(el);
+  const type     = (el.getAttribute('type') || '').toLowerCase();
+  const question = findExLabel(el);
+  const container = getExQuestionContainer(el);
+  if (!question || question.length < 3) return null;
+  let fieldType = type || tag;
+  if ((fieldType === 'text' || fieldType === 'textarea' || fieldType === 'input') && looksNumericField(el, question))
+    fieldType = 'number';
+  return {
+    question, type: fieldType, tag,
+    required: isExRequired(el, question),
+    answer:   ('value' in el ? el.value : '') || '',
+    options:  [],
+    dom:              exDomSnapshot(el, container),
+    section:          getExSection(el),
+    validationMessage: getExValidationMessage(el),
+    targets: [{ selector: cssPath(el), id: el.id || '', name: el.name || '', tag, type: type || tag }],
+  };
+}
+
+function attachOtherFollowups(fields) {
+  const out = [];
+  for (const field of fields) {
+    const q = (field.question || '').toLowerCase().trim();
+    const isOther = /^other:?$/.test(q) || q.includes('please specify');
+    if (isOther && out.length) {
+      const parent = out[out.length - 1];
+      if (parent && ['radio', 'checkbox_group', 'consent_checkbox_group', 'select'].includes(parent.type)) {
+        if (!parent.followups) parent.followups = [];
+        parent.followups.push({ question: field.question, type: field.type, answer: field.answer, dom: field.dom, targets: field.targets });
+        continue;
+      }
+    }
+    out.push(field);
+  }
+  return out;
+}
+
+// ── Auto-click consent checkboxes ───────────────────────────────────────────
+
+function autoClickConsentCheckboxes() {
+  document.querySelectorAll('input[type="checkbox"]').forEach(el => {
+    if (!isVisible(el) || el.checked) return;
+    const label = getLabelText(el) || '';
+    if (/consent|agree|understand|authorize|accept|confirm/i.test(label)) el.click();
+  });
+}
+
+// ── Main field collector ────────────────────────────────────────────────────
+
+function collectFields() {
+  autoClickConsentCheckboxes();
+
+  const nodes = Array.from(document.querySelectorAll(
+    'input, textarea, select, [role="combobox"], [aria-haspopup="listbox"]'
+  )).filter(isRealQuestionField);
+
+  const seen   = new Set();
+  const fields = [];
+
+  for (const el of nodes) {
+    const type = (el.getAttribute('type') || '').toLowerCase();
+    const name = el.getAttribute('name') || '';
+    let field  = null;
+
+    if (type === 'radio') {
+      const key = `radio:${name || cssPath(el)}`;
+      if (seen.has(key)) continue;
+      field = collectRadioGroup(el);
+      if (field) seen.add(key);
+    } else if (type === 'checkbox') {
+      const key = `checkbox:${name || cssPath(el)}`;
+      if (seen.has(key)) continue;
+      field = collectCheckboxGroup(el);
+      if (field) seen.add(key);
+    } else {
+      const key = `${el.tagName.toLowerCase()}:${el.id || name || cssPath(el)}`;
+      if (!key || seen.has(key)) continue;
+      field = collectSingleField(el);
+      if (field) seen.add(key);
+    }
+
+    if (field) fields.push(field);
+  }
+
+  return attachOtherFollowups(fields);
+}
+
+// ── Selector-based fill ─────────────────────────────────────────────────────
+
+function resolveElement(target) {
+  if (!target) return null;
+  let el = null;
+  if (target.selector) {
+    try { el = document.querySelector(target.selector); } catch (_) {}
+  }
+  if (!el && target.name) {
+    try { el = document.querySelector(`[name="${CSS.escape(target.name)}"]`); } catch (_) {}
+  }
+  if (!el && target.id) {
+    try { el = document.getElementById(target.id); } catch (_) {}
+  }
+  return el || null;
+}
+
+// ── FIX 2: Range-aware findExMatchingOption ─────────────────────────────────
+
+function findExMatchingOption(field, answer) {
+  const raw        = String(answer || '').trim();
+  const normalized = raw.toLowerCase();
+  if (!normalized) return null;
+
+  const opts = field.options || [];
+
+  // 1. Exact case-insensitive match
+  const exact = opts.find(o => String(o.label || '').trim().toLowerCase() === normalized);
+  if (exact) return exact;
+
+  // 2. Normalized match (strip punctuation/currency symbols)
+  const normAnswer = normalizeText(raw);
+  const normExact  = opts.find(o => normalizeText(String(o.label || '')) === normAnswer);
+  if (normExact) return normExact;
+
+  // 3. Partial substring match (either direction)
+  const partial = opts.find(o => {
+    const l = String(o.label || '').trim().toLowerCase();
+    return l.includes(normalized) || normalized.includes(l);
+  });
+  if (partial) return partial;
+
+  // 4. Normalized partial match
+  const normPartial = opts.find(o => {
+    const l = normalizeText(String(o.label || ''));
+    return l.includes(normAnswer) || normAnswer.includes(l);
+  });
+  if (normPartial) return normPartial;
+
+  // 5. FIX: Range-aware numeric match
+  // Answer is a number (e.g. "3" from estimateExperienceYears).
+  // Find the option whose range contains that number.
+  // Handles: "1 to 2 years", "3 - 5 years", "Less than 1 year", "6+ years", "10 or more"
+  const answerNum = parseFloat(raw);
+  if (!isNaN(answerNum)) {
+    // "Less than 1" / "Under 1" / "0-1" → match if answerNum < 1
+    const lessThanOne = opts.find(o =>
+      /less\s+than\s+1|under\s+1|0\s*[-–]\s*1\s+year|fewer\s+than\s+1/i.test(String(o.label || ''))
+    );
+    if (lessThanOne && answerNum < 1) return lessThanOne;
+
+    // Ceiling / "N+" bucket and range buckets
+    let bestCeiling = null;
+    let bestCeilingThreshold = -Infinity;
+    let bestRange = null;
+
+    for (const o of opts) {
+      const label = String(o.label || '');
+
+      // "N+ years" / "More than N" / "N or more"
+      const moreMatch = label.match(/(\d+)\s*\+|\bmore\s+than\s+(\d+)|\b(\d+)\s+or\s+more/i);
+      if (moreMatch) {
+        const threshold = parseInt(moreMatch[1] || moreMatch[2] || moreMatch[3], 10);
+        if (answerNum >= threshold && threshold >= bestCeilingThreshold) {
+          bestCeilingThreshold = threshold;
+          bestCeiling = o;
+        }
+        continue;
+      }
+
+      // Range: "N to M", "N - M", "N–M"
+      const nums = label.match(/\d+/g);
+      if (!nums || nums.length < 2) continue;
+      const lo = Math.min(...nums.map(Number));
+      const hi = Math.max(...nums.map(Number));
+      if (answerNum >= lo && answerNum <= hi) {
+        // Prefer narrower ranges (smaller hi - lo)
+        if (!bestRange || (hi - lo) < (bestRange._hi - bestRange._lo)) {
+          bestRange = { o, _lo: lo, _hi: hi };
+        }
+      }
+    }
+
+    if (bestRange) return bestRange.o;
+    if (bestCeiling) return bestCeiling;
+
+    // Single-number options (e.g. "3 years") — match closest within ±2
+    let closestOpt = null;
+    let closestDiff = Infinity;
+    for (const o of opts) {
+      const nums = (String(o.label || '').match(/\d+/g) || []).map(Number);
+      if (nums.length !== 1) continue;
+      const diff = Math.abs(nums[0] - answerNum);
+      if (diff < closestDiff) { closestDiff = diff; closestOpt = o; }
+    }
+    if (closestOpt && closestDiff <= 2) return closestOpt;
+  }
+
+  // 6. FIX: Word-overlap fallback — only words longer than 3 chars to reduce noise
+  // (filters out "to", "of", "the", "for", etc.)
+  const answerWords = new Set(normalized.split(/\W+/).filter(w => w.length > 3));
+  if (answerWords.size > 0) {
+    let bestOpt = null;
+    let bestScore = 0;
+    for (const o of opts) {
+      const optWords = String(o.label || '').toLowerCase().split(/\W+/).filter(Boolean);
+      const score = optWords.filter(w => answerWords.has(w)).length;
+      if (score > bestScore) { bestScore = score; bestOpt = o; }
+    }
+    if (bestOpt && bestScore >= 1) return bestOpt;
+  }
+
+  return null;
+}
+
+function setExInputValue(el, value) {
+  const proto = el.tagName === 'TEXTAREA' ? window.HTMLTextAreaElement.prototype : window.HTMLInputElement.prototype;
+  const setter = Object.getOwnPropertyDescriptor(proto, 'value')?.set;
+  if (setter) { setter.call(el, ''); setter.call(el, value); } else { el.value = value; }
+  el.dispatchEvent(new Event('input',  { bubbles: true }));
+  el.dispatchEvent(new Event('change', { bubbles: true }));
+  el.dispatchEvent(new Event('blur',   { bubbles: true }));
+}
+
+async function applyAnswerToField(field, answer) {
+  if (!answer && answer !== 0) return false;
+  if (answer === '__SKIP__') return false;
+
+  const mainTarget = field.targets?.[0];
+  if (!mainTarget) return false;
+
+  const type = field.type;
+
+  // text / textarea / number
+  if (['text', 'textarea', 'number', 'email', 'tel', 'url'].includes(type)) {
+    const el = resolveElement(mainTarget);
+    if (!el) return false;
+    setExInputValue(el, String(answer));
+    return true;
+  }
+
+  // radio
+  if (type === 'radio') {
+    const match = findExMatchingOption(field, answer);
+    if (match?.selector) {
+      let el = null;
+      try { el = document.querySelector(match.selector); } catch (_) {}
+
+      if (!el && match.name) {
+        el = Array.from(
+          document.querySelectorAll(`input[type="radio"][name="${CSS.escape(match.name)}"]`)
+        ).find(r => r.value === match.value) || null;
+      }
+
+      if (el) {
+        if (!el.checked) el.click();
+        return true;
+      }
+    }
+
+    const qLower = String(field.question || field.label || '').toLowerCase();
+    const radioOptPairs = (field.options || []).map(opt => {
+      let el = null;
+
+      try { el = opt.selector ? document.querySelector(opt.selector) : null; } catch (_) {}
+      if (!el && opt.id) {
+        try { el = document.getElementById(opt.id); } catch (_) {}
+      }
+      if (!el && opt.name && opt.value !== undefined) {
+        el = Array.from(
+          document.querySelectorAll(`input[type="radio"][name="${CSS.escape(opt.name)}"]`)
+        ).find(r => r.value === opt.value) || null;
+      }
+
+      return el ? [el, opt.label || ''] : null;
+    }).filter(Boolean);
+
+    if (radioOptPairs.length) {
+      const ruleEl = pickChoiceByRules(qLower, radioOptPairs);
+      if (ruleEl) {
+        if (!ruleEl.checked) ruleEl.click();
+        return true;
+      }
+    }
+
+    console.warn('[QuickFill] Radio no match:', {
+      question: field.question || field.label || '(unknown)',
+      answer,
+      options: (field.options || []).slice(0, 5).map(o => o.label || o),
+    });
+    return false;
+  }
+
+  // ── FIX 3: select with experience-select belt-and-suspenders fallback ──
+  if (type === 'select') {
+    const el = resolveElement(mainTarget);
+    if (!el) return false;
+
+    // Country/phone-code alias normalization
+    const countryAliases = {
+      canada: 'CA',
+      'united states': 'US',
+      usa: 'US',
+    };
+
+    const answerNorm = String(answer || '').toLowerCase().trim();
+    if (countryAliases[answerNorm]) {
+      const code = countryAliases[answerNorm];
+      const aliasMatch = (field.options || []).find(o =>
+        String(o.value || '').toUpperCase().startsWith(code) ||
+        String(o.label || '').toLowerCase().includes(answerNorm)
+      );
+
+      if (aliasMatch) {
+        el.value = aliasMatch.value !== undefined ? aliasMatch.value : aliasMatch.label;
+        el.dispatchEvent(new Event('change', { bubbles: true }));
+        el.dispatchEvent(new Event('blur', { bubbles: true }));
+        return true;
+      }
+    }
+
+    let match = findExMatchingOption(field, answer);
+
+    // FIX 3: experience-select fallback — if no match and question is about years,
+    // try passing just the numeric value through range matching directly.
+    if (!match && /how many years|years of (relevant |work |related )?experience/i.test(
+      String(field.question || field.label || '')
+    )) {
+      const num = parseFloat(String(answer));
+      if (!isNaN(num)) {
+        match = findExMatchingOption(field, String(num));
+      }
+    }
+
+    if (!match) {
+      console.warn('[QuickFill] Select no match:', {
+        label: field.question || field.label || '(unknown)',
+        answer,
+        options: (field.options || []).slice(0, 8).map(o => o.label || o),
+      });
+      return false;
+    }
+
+    el.value = match.value !== undefined ? match.value : match.label;
+    el.dispatchEvent(new Event('change', { bubbles: true }));
+    el.dispatchEvent(new Event('blur', { bubbles: true }));
+    return true;
+  }
+
+  // checkbox_group / consent_checkbox_group
+  if (type === 'checkbox_group' || type === 'consent_checkbox_group') {
+    const answers = Array.isArray(answer) ? answer : [answer];
+    let success = false;
+
+    const effectiveAnswers = answers.length
+      ? answers
+      : (() => {
+          const generalOpt = (field.options || []).find(o =>
+            /general|broad|basic|all|management|operations/i.test(o.label || '')
+          );
+          const lastOpt = field.options?.[field.options.length - 1];
+          return [(generalOpt || lastOpt)?.label].filter(Boolean);
+        })();
+
+    for (const a of effectiveAnswers) {
+      const match = findExMatchingOption(field, a);
+      if (!match) continue;
+
+      let el = null;
+      try { el = match.selector ? document.querySelector(match.selector) : null; } catch (_) {}
+
+      if (!el && match.name) {
+        el = Array.from(
+          document.querySelectorAll(`input[type="checkbox"][name="${CSS.escape(match.name)}"]`)
+        ).find(c => c.value === match.value) || null;
+      }
+
+      if (el && !el.checked) {
+        el.click();
+        success = true;
+      }
+    }
+
+    return success;
+  }
+
+  return false;
+}
+
+// ── FIX 1: AI field mapping — tag experience selects as 'number' ────────────
+
+function mapExtractedFieldForAI(field) {
+  const mainTarget = field.targets?.[0] || {};
+
+  const labelText = field.question || field.label || '';
+
+  // FIX 1: if a select's label looks like an experience/years question, mark it
+  // as 'number' so rules.js resolveRuleField → estimateExperienceYears() handles it.
+  // The returned number string then goes through findExMatchingOption's range-aware
+  // step 5 to correctly match labels like "3 to 5 years".
+  const looksLikeExperienceSelect =
+    field.type === 'select' &&
+    /how many years|years of (relevant |work |related )?experience|years have you|amount of experience/i.test(labelText);
+
+  return {
+    label: labelText,
+    name: mainTarget.name || field.dom?.name || '',
+    placeholder: field.dom?.placeholder || '',
+    // FIX 1: coerce experience selects to 'number' so rules.js intercepts them
+    type: looksLikeExperienceSelect ? 'number' : (field.type || ''),
+    tag: field.tag || mainTarget.tag || '',
+    options: (field.options || [])
+      .map(o => (typeof o === 'string' ? o : (o.label || o.value || '')))
+      .filter(Boolean),
+    currentValue: (Array.isArray(field.answer) ? field.answer.join(', ') : field.answer) || '',
+    required: !!field.required,
+    section: field.section || '',
+    validationMsg: field.validationMessage || '',
+    domRole: field.dom?.role || '',
+    ariaInvalid: field.dom?.ariaInvalid || '',
+    _pageUrl: location.pathname,
+    // Preserve original type so applyAnswerToField uses the right fill path
+    // (applyAnswerToField receives fields[i] which has the original collected type,
+    //  not the AI-mapped version, so no change is needed there)
+    _originalType: field.type || '',
+  };
+}
+
 // ─── Standard field harvest ────────────────────────────────────────────────
 
 function harvestFields() {
@@ -1012,7 +1752,6 @@ function harvestFields() {
 
   // ── Indeed-specific harvesting ──
   if (isIndeedPage() || isSmartApplyPage()) {
-    // PRIMARY: name-based radio groups (Indeed's q_{hash} pattern)
     const namedRadios = harvestIndeedNamedRadioGroups(seen);
     for (const nf of namedRadios) {
       const exists = fields.findIndex(f => f.id === nf.id);
@@ -1020,7 +1759,6 @@ function harvestFields() {
       else fields.push(nf);
     }
 
-    // Wire in checkbox-group harvester
     const namedCheckboxGroups = harvestIndeedNamedCheckboxGroups(seen);
     for (const cf of namedCheckboxGroups) {
       const exists = fields.findIndex(f => f.id === cf.id);
@@ -1028,7 +1766,6 @@ function harvestFields() {
       else fields.push(cf);
     }
 
-    // SECONDARY: container-based (legacy screener format)
     const containerFields = harvestIndeedContainerFields(seen);
     for (const cf of containerFields) {
       const exists = fields.findIndex(f => f.id === cf.id || f.name === cf.name);
@@ -1139,7 +1876,6 @@ async function applyAnswer(field, answer) {
 
     if (!boxes.length) return false;
 
-    // FIX: use same wrapping-label fallback as harvester for consistent text
     const options = boxes.map(b => {
       const bid     = b.getAttribute('id') || '';
       const lblEl   = bid ? document.querySelector(`label[for="${CSS.escape(bid)}"]`) : null;
@@ -1156,7 +1892,7 @@ async function applyAnswer(field, answer) {
 
     const qLower = (field.label || '').toLowerCase();
 
-    // 1. Rule-based single choice (for binary-style checkbox questions)
+    // 1. Rule-based single choice
     const ruleChoice = pickChoiceByRules(qLower, options);
     if (ruleChoice) {
       for (const [box] of options) {
@@ -1167,12 +1903,10 @@ async function applyAnswer(field, answer) {
       return true;
     }
 
-    // 2. FIX: support comma-separated multi-answer strings from AI
-    //    e.g. "JavaScript, Python" or "Monday, Wednesday, Friday"
+    // 2. Comma-separated multi-answer strings from AI
     const rawAnswers = String(answer).split(',').map(a => normalizeText(a.trim())).filter(Boolean);
 
     if (rawAnswers.length > 1) {
-      // Multi-select path
       const chosenBoxes = new Set();
       for (const [box, text] of options) {
         const t = normalizeText(text);
@@ -1212,7 +1946,6 @@ async function applyAnswer(field, answer) {
     // 5. Last resort: first option
     if (!chosen && options.length) chosen = options[0][0];
 
-    // Enforce single logical choice: uncheck everything else, check chosen
     for (const [box] of options) {
       if (box !== chosen && box.checked) box.click();
     }
@@ -1228,7 +1961,6 @@ async function applyAnswer(field, answer) {
       `input[type="radio"][name="${CSS.escape(field.name)}"]`
     );
 
-    // 1. Rule-based picker — runs before AI
     if (radios.length) {
       const options = Array.from(radios).map(r => {
         const rid  = r.id;
@@ -1245,7 +1977,6 @@ async function applyAnswer(field, answer) {
       }
     }
 
-    // 2. Match by answer text (AI-supplied)
     const ans = normalizeText(answer);
     for (const r of radios) {
       const rid  = r.id;
@@ -1257,7 +1988,6 @@ async function applyAnswer(field, answer) {
       }
     }
 
-    // 3. Last resort: click first option
     if (radios.length > 0 && !radios[0].checked) radios[0].click();
     return true;
   }
@@ -1518,15 +2248,18 @@ function pushLog(log, msg) {
 }
 
 // ─── Multi-step runner ─────────────────────────────────────────────────────
-
 async function runMultiStepFlow(maxSteps = 12) {
   let totalFilled = 0;
   let log = [];
 
   chrome.storage.local.set({ flowCancelled: false });
   reportProgress({
-    status: 'running', step: 0, maxSteps,
-    filled: 0, message: 'Starting…', log,
+    status: 'running',
+    step: 0,
+    maxSteps,
+    filled: 0,
+    message: 'Starting…',
+    log,
     startedAt: Date.now(),
     stats: { profile: 0, rule: 0, ai: 0, memory: 0, skipped: 0 },
   });
@@ -1534,14 +2267,21 @@ async function runMultiStepFlow(maxSteps = 12) {
   const totalStats = { profile: 0, rule: 0, ai: 0, memory: 0, skipped: 0 };
 
   for (let step = 0; step < maxSteps; step++) {
-
     if (await isCancelledInStorage()) {
       log = pushLog(log, '⊘ Stopped by user');
-      reportProgress({ status: 'stopped', step, maxSteps, filled: totalFilled, message: 'Stopped by user', log, stats: totalStats });
+      reportProgress({
+        status: 'stopped',
+        step,
+        maxSteps,
+        filled: totalFilled,
+        message: 'Stopped by user',
+        log,
+        stats: totalStats,
+      });
       return { ok: false, submitted: false, totalFilled, error: 'Cancelled by user' };
     }
 
-    const pageText      = getPageText();
+    const pageText = getPageText();
     const beforeSnapshot = pageText.slice(0, 2000);
 
     if (isSmartApplyPage() && getSmartApplyStep() === 'redirect') {
@@ -1551,35 +2291,62 @@ async function runMultiStepFlow(maxSteps = 12) {
 
     if (isEmployerRequirementsWarningPage(pageText)) {
       log = pushLog(log, `⚠ Step ${step + 1} – Requirements warning, clicking Apply Anyway`);
-      reportProgress({ status: 'running', step: step + 1, maxSteps, filled: totalFilled, message: 'Bypassing requirements warning…', log, stats: totalStats });
+      reportProgress({
+        status: 'running',
+        step: step + 1,
+        maxSteps,
+        filled: totalFilled,
+        message: 'Bypassing requirements warning…',
+        log,
+        stats: totalStats,
+      });
       const btn = findApplyAnywayButton();
-      if (btn) { await safeNavigate(btn, beforeSnapshot); continue; }
+      if (btn) {
+        await safeNavigate(btn, beforeSnapshot);
+        continue;
+      }
     }
 
     if (!shouldSkipCurrentPage(pageText) && !isReasonForApplyingPage(pageText)) {
-      let fields = harvestFields();
+      let fields = collectFields();
       if (fields.length === 0) {
         await sleep(400);
-        fields = harvestFields();
+        fields = collectFields();
       }
 
       if (fields.length > 0) {
-        log = pushLog(log, `⟳ Step ${step + 1} – Processing ${fields.length} field${fields.length === 1 ? '' : 's'}…`);
+        log = pushLog(
+          log,
+          `⟳ Step ${step + 1} – Processing ${fields.length} field${fields.length === 1 ? '' : 's'}…`
+        );
         reportProgress({
-          status: 'running', step: step + 1, maxSteps,
+          status: 'running',
+          step: step + 1,
+          maxSteps,
           filled: totalFilled,
           message: `Step ${step + 1} – Processing ${fields.length} field${fields.length === 1 ? '' : 's'}…`,
-          log, stats: totalStats,
+          log,
+          stats: totalStats,
         });
 
         if (await isCancelledInStorage()) {
           log = pushLog(log, '⊘ Stopped by user');
-          reportProgress({ status: 'stopped', step: step + 1, maxSteps, filled: totalFilled, message: 'Stopped by user', log, stats: totalStats });
+          reportProgress({
+            status: 'stopped',
+            step: step + 1,
+            maxSteps,
+            filled: totalFilled,
+            message: 'Stopped by user',
+            log,
+            stats: totalStats,
+          });
           return { ok: false, submitted: false, totalFilled, error: 'Cancelled by user' };
         }
 
+        const aiReadyFields = fields.map(mapExtractedFieldForAI);
+
         const aiResp = await Promise.race([
-          requestAiAnswers(fields),
+          requestAiAnswers(aiReadyFields),
           new Promise(res => setTimeout(() => res({ ok: false, answers: [], error: 'timeout' }), 4000)),
         ]);
         const answers = aiResp?.answers || [];
@@ -1588,48 +2355,99 @@ async function runMultiStepFlow(maxSteps = 12) {
           const src = (a.source || '').toLowerCase();
           if (src.includes('memory')) totalStats.memory++;
           else if (src === 'profile') totalStats.profile++;
-          else if (src === 'rule')    totalStats.rule++;
-          else if (src === 'ai')      totalStats.ai++;
+          else if (src === 'rule') totalStats.rule++;
+          else if (src === 'ai') totalStats.ai++;
           else totalStats.skipped++;
         }
 
-        let filled = 0, retryCount = 0;
-        for (const item of answers) {
-          const fieldMeta = fields.find(f => f.id === item.id) || item;
-          const result    = await fillFieldWithValidationRetry(fieldMeta, item.answer, log);
-          if (result.ok) {
-            filled++;
-            if (result.retried) retryCount++;
+        let filled = 0;
+
+        for (let i = 0; i < fields.length; i++) {
+          const field = fields[i];
+          const resolved = answers[i] || {};
+          let answer = resolved.answer;
+
+          if (answer == null || answer === '' || answer === '__SKIP__') {
+            continue;
+          }
+
+          if (Array.isArray(answer)) {
+            answer = answer
+              .map(v => (v == null ? '' : String(v).trim()))
+              .filter(Boolean);
+
+            if (!answer.length) continue;
+          } else if (typeof answer === 'string') {
+            answer = answer.trim();
+            if (!answer) continue;
+          } else if (typeof answer === 'number' || typeof answer === 'boolean') {
+            answer = String(answer);
+          } else {
+            console.warn('Skipping invalid non-serializable answer', {
+              field,
+              resolved,
+              answerType: typeof answer,
+            });
+            continue;
+          }
+
+          if (field.type === 'checkbox_group' && typeof answer === 'string') {
+            answer = answer
+              .split(',')
+              .map(s => s.trim())
+              .filter(Boolean);
+
+            if (!answer.length) continue;
+          }
+
+          try {
+            const ok = await applyAnswerToField(field, answer);
+            if (ok) filled++;
+          } catch (err) {
+            console.warn('applyAnswerToField failed', {
+              field,
+              resolved,
+              normalizedAnswer: answer,
+              error: err?.message || err,
+            });
           }
         }
 
         totalFilled += filled;
-        const summary   = buildStepSummary(answers);
-        const retryNote = retryCount ? ` (${retryCount} retried)` : '';
-        log = pushLog(log, `✓ Step ${step + 1} – Filled ${filled}/${fields.length}${retryNote} ${summary}`);
+        const summary = buildStepSummary(answers);
+        log = pushLog(log, `✓ Step ${step + 1} – Filled ${filled}/${fields.length} ${summary}`);
         reportProgress({
-          status: 'running', step: step + 1, maxSteps,
+          status: 'running',
+          step: step + 1,
+          maxSteps,
           filled: totalFilled,
-          message: `Step ${step + 1} – Filled ${filled} field${filled === 1 ? '' : 's'}${retryNote}`,
-          log, stats: totalStats,
+          message: `Step ${step + 1} – Filled ${filled} field${filled === 1 ? '' : 's'}`,
+          log,
+          stats: totalStats,
         });
         await sleep(100);
-
       } else {
         log = pushLog(log, `– Step ${step + 1} – No fields on this page, looking for navigation…`);
         reportProgress({
-          status: 'running', step: step + 1, maxSteps,
+          status: 'running',
+          step: step + 1,
+          maxSteps,
           filled: totalFilled,
           message: `Step ${step + 1} – No fields, looking for Continue…`,
-          log, stats: totalStats,
+          log,
+          stats: totalStats,
         });
       }
-
     } else {
       log = pushLog(log, `– Step ${step + 1} – Skipping page (special page type)`);
       reportProgress({
-        status: 'running', step: step + 1, maxSteps, filled: totalFilled,
-        message: `Step ${step + 1} – Skipping special page…`, log, stats: totalStats,
+        status: 'running',
+        step: step + 1,
+        maxSteps,
+        filled: totalFilled,
+        message: `Step ${step + 1} – Skipping special page…`,
+        log,
+        stats: totalStats,
       });
     }
 
@@ -1637,11 +2455,22 @@ async function runMultiStepFlow(maxSteps = 12) {
     if (submitBtn) {
       log = pushLog(log, `🏁 Reached submit page — ${totalFilled} field${totalFilled === 1 ? '' : 's'} filled`);
       reportProgress({
-        status: 'done', step: step + 1, maxSteps, filled: totalFilled,
+        status: 'done',
+        step: step + 1,
+        maxSteps,
+        filled: totalFilled,
         message: 'Reached submit page — review and submit manually',
-        log, stoppedAtSubmit: true, stats: totalStats,
+        log,
+        stoppedAtSubmit: true,
+        stats: totalStats,
       });
-      return { ok: true, submitted: false, stoppedAtSubmit: true, totalFilled, steps: step + 1 };
+      return {
+        ok: true,
+        submitted: false,
+        stoppedAtSubmit: true,
+        totalFilled,
+        steps: step + 1,
+      };
     }
 
     const btn = await findAnyNavigationButtonWithRetry();
@@ -1649,11 +2478,21 @@ async function runMultiStepFlow(maxSteps = 12) {
     if (!btn) {
       log = pushLog(log, `✗ No Continue/Next button found at step ${step + 1}`);
       reportProgress({
-        status: 'error', step: step + 1, maxSteps,
-        filled: totalFilled, message: 'No Continue/Next button found',
-        log, stats: totalStats,
+        status: 'error',
+        step: step + 1,
+        maxSteps,
+        filled: totalFilled,
+        message: 'No Continue/Next button found',
+        log,
+        stats: totalStats,
       });
-      return { ok: false, submitted: false, totalFilled, steps: step + 1, error: 'No Continue/Next/Submit button found' };
+      return {
+        ok: false,
+        submitted: false,
+        totalFilled,
+        steps: step + 1,
+        error: 'No Continue/Next/Submit button found',
+      };
     }
 
     const btnText = getBtnText(btn);
@@ -1661,8 +2500,13 @@ async function runMultiStepFlow(maxSteps = 12) {
     if (isSubmitButton(btn)) {
       log = pushLog(log, `🚀 Step ${step + 1} – Submitting application…`);
       reportProgress({
-        status: 'running', step: step + 1, maxSteps, filled: totalFilled,
-        message: 'Submitting application…', log, stats: totalStats,
+        status: 'running',
+        step: step + 1,
+        maxSteps,
+        filled: totalFilled,
+        message: 'Submitting application…',
+        log,
+        stats: totalStats,
       });
       await safeNavigate(btn, beforeSnapshot);
       return { ok: true, submitted: true, totalFilled };
@@ -1670,16 +2514,26 @@ async function runMultiStepFlow(maxSteps = 12) {
 
     log = pushLog(log, `→ Step ${step + 1} – ${btnText || 'Continue'}`);
     reportProgress({
-      status: 'running', step: step + 1, maxSteps, filled: totalFilled,
-      message: `Step ${step + 1} – Going to next page…`, log, stats: totalStats,
+      status: 'running',
+      step: step + 1,
+      maxSteps,
+      filled: totalFilled,
+      message: `Step ${step + 1} – Going to next page…`,
+      log,
+      stats: totalStats,
     });
     await safeNavigate(btn, beforeSnapshot);
   }
 
   log = pushLog(log, `⚠ Max steps (${maxSteps}) reached`);
   reportProgress({
-    status: 'error', step: maxSteps, maxSteps,
-    filled: totalFilled, message: 'Max steps reached', log, stats: totalStats,
+    status: 'error',
+    step: maxSteps,
+    maxSteps,
+    filled: totalFilled,
+    message: 'Max steps reached',
+    log,
+    stats: totalStats,
   });
   return { ok: false, submitted: false, totalFilled, error: 'Max steps reached' };
 }

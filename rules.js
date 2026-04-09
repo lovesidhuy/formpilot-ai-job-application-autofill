@@ -41,8 +41,14 @@ const INDEED_RULE_PATTERNS = [
   /convicted|felony|criminal charge|criminal offence/,
   /18 or above|over 18|at least 18|minimum age|18 years of age|age 18|be 18/,
   /ever worked for|previously worked for|have you worked at|ever been employed by|formerly employed by|worked at any of|previously employed by|ever employed by|work for any of|ever been an employee at|have you ever been.*employee|been an employee at/,
-  ///related to anyone|related to any(one)? that works|family member.*work|know anyone that works|connected to anyone at this company|relationship to.*employee/,
-  /available to work|work evenings|work weekends|work overtime|flexible schedule|work on weekends|work.*office|from the office|in office|in the office|office.*days|days.*per week|days a week|hybrid|3x per week|two days|three days|three times per week|tuesdays|wednesdays|thursdays|\bonsite\b|full.?time onsite|work.*on.?site/,
+  // FIX: "currently employed with [company]" → No; "former employee" → No
+  /currently employed (with|at|by|for)|are you (currently|presently) employed/,
+  /\bformer\b.*\bemployee\b|\bex.?employee\b|former staff|previously a.*employee/,
+  // FIX: referral Yes/No (were you referred to this position) → No
+  /were you referred|referred to (the|this) position|referred by (a |an )?(current |existing )?employee/,
+  // FIX: "do you know anyone that works" / "related to anyone" → No
+  /related to anyone|related to any(one)? that works|family member.*work|know anyone that works|connected to anyone at this company|relationship to.*employee|do you know anyone (that|who) works|know (of )?anyone.*work(s| for)/,
+  /available to work|work evenings|work weekends|work overtime|flexible schedule|work on weekends|work.*office|from the office|in office|in the office|office.*days|days.*per week|days a week|hybrid|3x per week|two days|three days|three times per week|tuesdays|wednesdays|thursdays|\bonsite\b/,
   /canadian citizen|permanent resident|pr holder|citizen of canada/,
   /currently enrolled|are you a student/,
   /are you at least|are you over/,
@@ -81,20 +87,31 @@ function fieldText(field) {
 }
 
 function pickYesNo(field, wantYes) {
-  const target = wantYes ? 'yes' : 'no';
-  const anti   = wantYes ? 'no'  : 'yes';
-  const opts   = field.options || [];
+  // FIX P1-4 — extend to handle True/False, Oui/Non, 1/0 options as well as Yes/No
+  const trueish  = ['yes', 'true', 'oui', '1'];
+  const falseish = ['no', 'false', 'non', '0'];
+  const opts = field.options || [];
 
   if (opts.length) {
-    const exact = opts.find(o => o.trim().toLowerCase() === target);
+    const pool = wantYes ? trueish : falseish;
+    const anti = wantYes ? falseish : trueish;
+
+    // exact match against any synonym in the pool
+    const exact = opts.find(o => pool.includes(o.trim().toLowerCase()));
     if (exact) return { answer: exact, source: 'rule' };
 
-    const starts = opts.find(o => o.trim().toLowerCase().startsWith(target));
+    // starts-with match (e.g. "Yes, I can" or "True - locally based")
+    const starts = opts.find(o =>
+      pool.some(p => o.trim().toLowerCase().startsWith(p))
+    );
     if (starts) return { answer: starts, source: 'rule' };
 
+    // contains-but-not-anti (original logic, kept as last resort)
+    const target = wantYes ? 'yes' : 'no';
+    const antiStr = wantYes ? 'no' : 'yes';
     const contains = opts.find(o => {
       const l = o.trim().toLowerCase();
-      return l.includes(target) && !l.startsWith(anti);
+      return l.includes(target) && !l.startsWith(antiStr);
     });
     if (contains) return { answer: contains, source: 'rule' };
   }
@@ -305,7 +322,9 @@ function resolveDirectField(field, profile) {
   )
     return { answer: profile.portfolio || '__SKIP__', source: 'profile' };
 
-  if (/\b(headline|current[\s_-]?title|job[\s_-]?title|position|role)\b/.test(text))
+  // FIX: guard against "position" appearing incidentally in referral/relay questions
+  if (/\b(headline|current[\s_-]?title|job[\s_-]?title|position|role)\b/.test(text) &&
+      !/refer|referral|indicate the name|employee.*refer|refer.*employee|name of the/.test(text))
     return { answer: profile.headline || null, source: 'profile' };
 
   if (/\b(summary|about[\s_-]?me|bio|professional[\s_-]?summary)\b/.test(text))
@@ -329,7 +348,36 @@ function resolveRuleField(field, profile) {
   if (isNumericExperienceField(field))
     return { answer: estimateExperienceYears(field, profile), source: 'rule' };
 
+  // FIX: Salary — if options are available (radio/select), pick the best matching range
   if (/salary|compensation|pay\s+expectation|desired\s+pay|expected\s+pay|expected\s+salary/.test(text)) {
+    if (field.options && field.options.length) {
+      // Try to match profile salary against a range option
+      const profSalary = profile.salary || '';
+      const profNum = parseInt((profSalary || '').replace(/[^\d]/g, ''), 10) || 0;
+      if (profNum > 0) {
+        // Find the option whose range contains the profile salary
+        for (const opt of field.options) {
+          const nums = (opt.match(/\d[\d,]*/g) || []).map(n => parseInt(n.replace(/,/g, ''), 10));
+          if (nums.length >= 2) {
+            const lo = Math.min(...nums);
+            const hi = Math.max(...nums);
+            if (profNum >= lo && profNum <= hi) return { answer: opt, source: 'profile' };
+          }
+        }
+        // No exact range match — pick the highest option below profile salary, or the first option
+        let bestOpt = null, bestHi = -Infinity;
+        for (const opt of field.options) {
+          const nums = (opt.match(/\d[\d,]*/g) || []).map(n => parseInt(n.replace(/,/g, ''), 10));
+          if (!nums.length) continue;
+          const hi = Math.max(...nums);
+          if (hi < profNum && hi > bestHi) { bestHi = hi; bestOpt = opt; }
+        }
+        if (bestOpt) return { answer: bestOpt, source: 'profile' };
+      }
+      // No profile salary number — pick last option (highest range) as default
+      const lastOpt = field.options[field.options.length - 1];
+      if (lastOpt) return { answer: lastOpt, source: 'rule' };
+    }
     if (!profile.salary) return null;
     const answer = field.type === 'number'
       ? (profile.salary.replace(/[^\d.]/g, '') || profile.salary)
@@ -355,6 +403,10 @@ function resolveRuleField(field, profile) {
   if (/drug\s+test|substance\s+test/.test(text))
     return pickYesNo(field, true);
 
+  // FIX P0-1 — Crime/pardon question: "convicted of a crime for which you have not received a pardon" → No
+  if (/convicted.*pardon|pardon.*convicted|criminal.*pardon/.test(text))
+    return pickYesNo(field, false);
+
   if (/convicted|felony|criminal\s+charge|criminal\s+offence/.test(text))
     return pickYesNo(field, false);
 
@@ -368,8 +420,30 @@ function resolveRuleField(field, profile) {
     return pickYesNo(field, false);
   }
 
-  // FIX — related-to-anyone now fires a No answer (was previously only in INDEED_RULE_PATTERNS = skip)
-  if (/related\s+to\s+anyone|related\s+to\s+any(one)?\s+that\s+works|family\s+member.*work|know\s+anyone\s+that\s+works|connected\s+to\s+anyone\s+at\s+this\s+company|relationship\s+to.*employee/.test(text))
+  // FIX: "currently employed with / at [company]" → No (user is not a current employee)
+  if (/currently\s+employed\s+(with|at|by|for)|are\s+you\s+(currently|presently)\s+employed/.test(text))
+    return pickYesNo(field, false);
+
+  // FIX: "former employee" / "ex-employee" → No
+  if (/\bformer\b.*\bemployee\b|\bex.?employee\b|former\s+staff|previously\s+a.*employee/.test(text)) {
+    const opts = field.options || [];
+    const never = opts.find(o => /never\s+worked|never\s+been|i\s+have\s+never|no,?\s+i('ve)?\s+never/i.test(o));
+    if (never) return { answer: never, source: 'rule' };
+    return pickYesNo(field, false);
+  }
+
+  // FIX: "were you referred to this position" (Yes/No) → No (not referred via internal employee)
+  // This runs BEFORE the "how did you hear" rule which incorrectly picks Yes/first option.
+  if (/were\s+you\s+referred|referred\s+to\s+(the|this)\s+position|referred\s+by\s+(a\s+|an\s+)?(current\s+|existing\s+)?employee/.test(text)) {
+    // Only handle pure Yes/No radios here — "how did you hear" select menus handled below
+    const opts = field.options || [];
+    const isYesNo = opts.length >= 2 && opts.every(o => /^(yes|no|oui|non)$/i.test(o.trim()));
+    if (!opts.length || isYesNo) return pickYesNo(field, false);
+    // If options aren't purely Yes/No (e.g. "Indeed", "Referral", etc.) fall through to the hear-about rule
+  }
+
+  // FIX P0-2 — friend/relative / know anyone: extended to catch all observed phrasings → No
+  if (/related\s+to\s+anyone|friend\s+or\s+relative|family\s+member.*work|know\s+anyone\s+that\s+works|connected\s+to\s+anyone|relationship\s+to.*employee|friend\s+or\s+family|relative\s+that\s+works|relative.*works\s+for|do\s+you\s+know\s+anyone\s+(that|who)\s+works|know\s+(of\s+)?anyone.*work(s|\s+for)/.test(text))
     return pickYesNo(field, false);
 
   if (/18\s+years?\s+of\s+age|at\s+least\s+18|over\s+18|18\s+or\s+above|minimum\s+age|age\s+18|be\s+18|are\s+you\s+at\s+least|are\s+you\s+over/.test(text))
@@ -545,7 +619,27 @@ function resolveRuleField(field, profile) {
     }
     const first = opts.find(o => o && o.trim());
     if (first) return { answer: first, source: 'rule' };
-    return null;
+    // FIX P4-13 — text input fallback (no options): return 'Indeed' instead of null → AI
+    return { answer: 'Indeed', source: 'rule' };
+  }
+
+  // FIX P0-3 — Certification questions (CompTIA, PMP, CCNA, etc.)
+  // Check profile skills; if cert not found → No (safe default, avoids false Yes).
+  if (/valid\s+(comptia|pmp|cissp|ceh|ccna|ccnp|aws[\s-]certified|azure[\s-]certified|google[\s-]certified|itil|cpa|cga|cfa|red[\s-]seal)|do\s+you\s+(have|hold)\s+a\s+valid\s+cert|hold\s+a\s+valid\s+cert/.test(text)) {
+    const profileSkills = (profile.skills || []).join(' ').toLowerCase();
+    const certMatch = text.match(/comptia[\s+]?\w+|pmp|cissp|ceh|ccna|ccnp|itil|cpa|cfa/i);
+    const certName = certMatch ? certMatch[0].toLowerCase().replace(/[\s+]+/g, '') : '';
+    const hasCert = certName ? profileSkills.replace(/\s+/g, '').includes(certName) : false;
+    return pickYesNo(field, hasCert);
+  }
+
+  // FIX P4-12 — "Today's date" / "Current date" fields: return today in YYYY-MM-DD format
+  if (/today.?s\s+date|current\s+date|date\s+today/.test(text)) {
+    const today = new Date();
+    const y = today.getFullYear();
+    const m = String(today.getMonth() + 1).padStart(2, '0');
+    const d = String(today.getDate()).padStart(2, '0');
+    return { answer: `${y}-${m}-${d}`, source: 'rule' };
   }
 
   if (/notice\s+period|available\s+to\s+start|start\s+date/.test(text))
