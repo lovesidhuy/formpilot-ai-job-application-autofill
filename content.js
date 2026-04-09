@@ -1,14 +1,13 @@
-// QuickFill AI – content.js v5.2
-// Changes over v5.1:
-// - Fix 1: mapExtractedFieldForAI now detects experience-select fields and tags
-//   them as type:'number' so rules.js resolveRuleField → estimateExperienceYears()
-//   handles them instead of sending to AI. Preserves _originalType for fill path.
-// - Fix 2: findExMatchingOption step 5 replaced with range-aware numeric matcher
-//   (handles "1 to 2 years", "3 - 5 years", "Less than 1 year", "6+ years", etc.)
-//   Step 6 word-overlap now filters words ≤ 3 chars to reduce noise.
-// - Fix 3: applyAnswerToField select branch gets belt-and-suspenders experience
-//   fallback — if no match and question is about years, re-runs range match with
-//   the numeric value directly before logging the warning.
+// QuickFill AI – content.js v5.3
+// Changes over v5.2:
+// - Fix 4: Defensive string coercion for field.question / field.label throughout
+//   applyAnswerToField — prevents "[object Object]" in console warns when a field
+//   arrives with a non-string question property (e.g. from legacy harvestFields path).
+// - Fix 4: options display in Select no-match warn now safely handles both plain
+//   string options and {label, value} object options.
+// - Fix 4: getFieldLabel() helper centralises safe label extraction so all warn
+//   sites are consistent.
+// (Fixes 1-3 from v5.2 preserved unchanged)
 
 'use strict';
 
@@ -1262,6 +1261,14 @@ function resolveElement(target) {
   return el || null;
 }
 
+// ── Fix 4: Safe field label extractor ──────────────────────────────────────
+// field.question or field.label could be a non-string if field construction went
+// wrong (e.g. a DOM node or options array leaked in). Always returns a plain string.
+function getFieldLabel(field) {
+  const raw = field.question || field.label || '';
+  return typeof raw === 'string' ? raw : String(raw && typeof raw === 'object' && raw.innerText ? raw.innerText : '');
+}
+
 // ── FIX 2: Range-aware findExMatchingOption ─────────────────────────────────
 
 function findExMatchingOption(field, answer) {
@@ -1415,7 +1422,7 @@ async function applyAnswerToField(field, answer) {
       }
     }
 
-    const qLower = String(field.question || field.label || '').toLowerCase();
+    const qLower = getFieldLabel(field).toLowerCase();
     const radioOptPairs = (field.options || []).map(opt => {
       let el = null;
 
@@ -1441,9 +1448,11 @@ async function applyAnswerToField(field, answer) {
     }
 
     console.warn('[QuickFill] Radio no match:', {
-      question: field.question || field.label || '(unknown)',
+      question: getFieldLabel(field) || '(unknown)',
       answer,
-      options: (field.options || []).slice(0, 5).map(o => o.label || o),
+      options: (field.options || []).slice(0, 5).map(o =>
+        typeof o === 'string' ? o : String(o.label || o.value || '(opt)')
+      ),
     });
     return false;
   }
@@ -1481,7 +1490,7 @@ async function applyAnswerToField(field, answer) {
     // FIX 3: experience-select fallback — if no match and question is about years,
     // try passing just the numeric value through range matching directly.
     if (!match && /how many years|years of (relevant |work |related )?experience/i.test(
-      String(field.question || field.label || '')
+      getFieldLabel(field)
     )) {
       const num = parseFloat(String(answer));
       if (!isNaN(num)) {
@@ -1491,9 +1500,11 @@ async function applyAnswerToField(field, answer) {
 
     if (!match) {
       console.warn('[QuickFill] Select no match:', {
-        label: field.question || field.label || '(unknown)',
+        label: getFieldLabel(field) || '(unknown)',
         answer,
-        options: (field.options || []).slice(0, 8).map(o => o.label || o),
+        options: (field.options || []).slice(0, 8).map(o =>
+          typeof o === 'string' ? o : String(o.label || o.value || '(opt)')
+        ),
       });
       return false;
     }
@@ -1549,7 +1560,7 @@ async function applyAnswerToField(field, answer) {
 function mapExtractedFieldForAI(field) {
   const mainTarget = field.targets?.[0] || {};
 
-  const labelText = field.question || field.label || '';
+  const labelText = String(field.question || field.label || '');
 
   // FIX 1: if a select's label looks like an experience/years question, mark it
   // as 'number' so rules.js resolveRuleField → estimateExperienceYears() handles it.
