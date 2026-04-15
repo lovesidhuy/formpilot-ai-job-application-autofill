@@ -41,6 +41,10 @@ Use **Settings → Test** to confirm Ollama is available before using AI-assiste
 
 
 
+<img width="1435" height="778" alt="image" src="https://github.com/user-attachments/assets/19e70dab-7ff4-4156-b8d6-a0b6fc2962e6" />
+
+
+
 
 ---
 
@@ -53,6 +57,14 @@ Use **Settings → Test** to confirm Ollama is available before using AI-assiste
    - Click **Stop** to abort if the page behaves unexpectedly.
 ---
 
+![Adobe Express - Screen Recording 2026-04-14 at 5 10 07 PM](https://github.com/user-attachments/assets/17f3cbce-3f27-4ed9-b9f5-ea96f96101bb)
+
+
+![Adobe Express - Screen Recording 2026-04-14 at 5 12 24 PM-3](https://github.com/user-attachments/assets/b54927ca-2b86-4b22-8b5d-3509705eb734)
+
+![Adobe Express - Screen Recording 2026-04-14 at 5 12 24 PM-5](https://github.com/user-attachments/assets/476db65c-9f10-4799-84e9-3c05fffd8435)
+
+
 
 ## Ollama & Settings
 
@@ -62,7 +74,6 @@ Use **Settings → Test** to confirm Ollama is available before using AI-assiste
 - If Ollama is unavailable or CORS is not configured, FormPilot AI continues working with profile data and rules only.
 
 ---
-<img width="1435" height="778" alt="image" src="https://github.com/user-attachments/assets/07e54f56-51cb-4763-b495-e5515d01ed14" />
 
 ## CORS Setup (Required for Ollama)
 
