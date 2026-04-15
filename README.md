@@ -64,14 +64,7 @@ Use **Settings → Test** to confirm Ollama is available before using AI-assiste
 - If Ollama is unavailable or CORS is not configured, FormPilot AI continues working with profile data and rules only.
 
 ---
-![Adobe Express - Screen Recording 2026-04-07 at 2 07 00 PM copy-4](https://github.com/user-attachments/assets/0c1ec816-9cba-48ef-a97c-c5be619dba1c)
-
-
-![Adobe Express - 88888-2](https://github.com/user-attachments/assets/f5422734-24a7-427e-a524-9c76ffe94c59)
-
-
-![Adobe Express - 0000-4](https://github.com/user-attachments/assets/0e1a0ddd-7b1b-4ff1-856a-f73c0ba299e8)
-
+<img width="1435" height="778" alt="image" src="https://github.com/user-attachments/assets/07e54f56-51cb-4763-b495-e5515d01ed14" />
 
 ## CORS Setup (Required for Ollama)
 
