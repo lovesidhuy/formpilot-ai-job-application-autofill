@@ -37,9 +37,164 @@ function optionList(field) {
   return (field.options || []).map(optionText).filter(Boolean);
 }
 
+function looksLikeCountryOptionList(options) {
+  const opts = (options || []).map(o => String(o || '').trim().toLowerCase()).filter(Boolean);
+  return (
+    opts.length >= 20 &&
+    opts.includes('canada') &&
+    opts.includes('united states') &&
+    opts.includes('afghanistan')
+  );
+}
+
+function firstMatch(text, patterns) {
+  for (const pattern of patterns) {
+    const match = String(text || '').match(pattern);
+    if (match?.[1]) return match[1].trim();
+  }
+  return '';
+}
+
+function inferFieldOfStudy(profile) {
+  const explicit = String(profile.fieldOfStudy || '').trim();
+  if (explicit) return explicit;
+
+  const education = String(profile.education || '').trim();
+  if (!education) return '';
+
+  const matched = firstMatch(education, [
+    /\b(?:bachelor|master|masters|doctorate|phd|diploma|certificate|associate(?:'s)?|b\.?\s*tech|b\.?\s*sc)\s+(?:of|in)\s+([^,()]+)/i,
+    /\bmajor(?:ed)?\s+in\s+([^,()]+)/i,
+    /\bfield\s+of\s+study[:\s]+([^,()]+)/i,
+  ]);
+
+  return matched || education;
+}
+
+function inferGradYear(profile) {
+  const explicit = String(profile.gradYear || '').trim();
+  if (/^(19|20)\d{2}$/.test(explicit)) return explicit;
+
+  const education = String(profile.education || '').trim();
+  const matched = education.match(/\b(19|20)\d{2}\b/);
+  return matched ? matched[0] : '';
+}
+
+function inferSchoolName(profile) {
+  const education = String(profile.education || '').trim();
+  if (!education) return '';
+
+  const bySplit = education.split(/[-|,()]/).map(part => part.trim()).filter(Boolean);
+  const schoolish = bySplit.find(part => /\b(university|college|institute|polytechnic|school)\b/i.test(part));
+  return schoolish || education;
+}
+
+function inferDegreeText(profile) {
+  const education = String(profile.education || '').trim();
+  if (!education) return '';
+
+  const bySplit = education.split(/[-|,()]/).map(part => part.trim()).filter(Boolean);
+  const degreeish = bySplit.find(part => /\b(bachelor|master|masters|doctorate|phd|diploma|certificate|associate|b\.?\s*tech|b\.?\s*sc|m\.?\s*sc)\b/i.test(part));
+  return degreeish || education;
+}
+
+function inferShortHeadline(profile) {
+  const headline = String(profile.headline || '').trim();
+  if (!headline) return '';
+
+  const cleaned = headline
+    .replace(/\.$/, '')
+    .replace(/\s+speciali[sz]ing\s+in.*$/i, '')
+    .replace(/\s+with\s+a?\s*focus\s+on.*$/i, '')
+    .trim();
+
+  return cleaned || headline;
+}
+
+function scoreEducationOption(option) {
+  const text = String(option || '').trim().toLowerCase();
+  if (!text) return -1;
+  if (/no diploma|none|no degree/i.test(text)) return 0;
+  if (/doctor|phd|doctorate|md\b|juris doctor/i.test(text)) return 90;
+  if (/master|mba\b|m\.sc|ma\b/i.test(text)) return 80;
+  if (/bachelor|b\.sc|bsc\b|b\.tech|ba\b|bs\b/i.test(text)) return 70;
+  if (/dcs|dec|associate/i.test(text)) return 60;
+  if (/aec|dep|trade certificate|certificate|diploma/i.test(text)) return 50;
+  if (/secondary|high school/i.test(text)) return 20;
+  return 10;
+}
+
+function normalizeEducationLevel(value) {
+  const text = String(value || '').trim().toLowerCase();
+  if (!text) return '';
+  if (/no diploma|none|no degree/.test(text)) return 'none';
+  if (/doctor|phd|doctorate|juris doctor|md\b/.test(text)) return 'doctorate';
+  if (/master|mba\b|m\.sc|ma\b/.test(text)) return 'masters';
+  if (/bachelor|b\.sc|bsc\b|b\.tech|ba\b|bs\b|undergraduate|university/.test(text)) return 'bachelors';
+  if (/associate|dec|dcs/.test(text)) return 'associate';
+  if (/certificate|diploma|trade|aec|dep/.test(text)) return 'certificate';
+  if (/secondary|high school/.test(text)) return 'secondary';
+  return '';
+}
+
+function pickEducationLevelAnswer(field, profile) {
+  const opts = optionList(field);
+  if (!opts.length) return null;
+
+  const explicitLevel = normalizeEducationLevel(profile.educationLevel || '');
+  const inferredLevel = normalizeEducationLevel(inferDegreeText(profile));
+  const degreeText = inferDegreeText(profile).toLowerCase();
+  const level = explicitLevel || inferredLevel;
+
+  const explicitLevelMatchers = [
+    level === 'doctorate' ? /\b(doctor|phd|doctorate|juris doctor)\b/i : null,
+    level === 'masters' ? /\bmaster\b|mba\b|m\.sc|ma\b/i : null,
+    level === 'bachelors' ? /\bbachelor\b|\bb\.?tech\b|\bb\.?sc\b|\bbs\b|\bba\b/i : null,
+    level === 'associate' ? /\bassociate\b|\bdcs\b|\bdec\b/i : null,
+    level === 'certificate' ? /\bcertificate\b|\bdiploma\b|\bdep\b|\baec\b|\btrade\b/i : null,
+    level === 'secondary' ? /\bsecondary\b|high school/i : null,
+    level === 'none' ? /\bno diploma\b|\bno degree\b|\bnone\b/i : null,
+  ].filter(Boolean);
+
+  for (const matcher of explicitLevelMatchers) {
+    const match = opts.find(o => matcher.test(o));
+    if (match) return { answer: match, source: 'rule' };
+  }
+
+  const rankedMatchers = [
+    degreeText.includes('doctor') || degreeText.includes('phd') ? /\b(doctor|phd|doctorate|juris doctor)\b/i : null,
+    degreeText.includes('master') ? /\bmaster\b/i : null,
+    degreeText.includes('bachelor') || degreeText.includes('b.tech') || degreeText.includes('technology') ? /\bbachelor\b|\bb\.?tech\b/i : null,
+    degreeText.includes('associate') || degreeText.includes('dec') || degreeText.includes('dcs') ? /\bassociate\b|\bdcs\b|\bdec\b/i : null,
+    degreeText.includes('diploma') ? /\bdiploma\b/i : null,
+    degreeText.includes('certificate') ? /\bcertificate\b|\bdep\b|\baec\b/i : null,
+  ].filter(Boolean);
+
+  for (const matcher of rankedMatchers) {
+    const match = opts.find(o => matcher.test(o));
+    if (match) return { answer: match, source: 'rule' };
+  }
+
+  if (profile.education) {
+    const sorted = [...opts]
+      .map(option => ({ option, score: scoreEducationOption(option) }))
+      .sort((a, b) => b.score - a.score);
+    const best = sorted.find(item => item.score >= 50) || sorted.find(item => item.score > 0);
+    if (best) return { answer: best.option, source: 'rule' };
+  }
+
+  return null;
+}
+
 function isGenericFieldLabel(field) {
   const text = String(field.label || field.name || field.id || '').trim().toLowerCase();
-  return !text || /^q_[a-f0-9]{8,}$/i.test(text) || text === 'unknown field' || text === 'select one option';
+  return (
+    !text ||
+    /^q_[a-f0-9]{8,}$/i.test(text) ||
+    text === 'unknown field' ||
+    text === 'select one option' ||
+    text === 'select an option'
+  );
 }
 
 function isDescriptiveTextField(field) {
@@ -76,6 +231,12 @@ function getAnswerMode(field) {
 function profileValueOrSkip(value, fallback = '__SKIP__') {
   const text = String(value ?? '').trim();
   return text || fallback;
+}
+
+function phoneDigitsOrSkip(value, fallback = '__SKIP__') {
+  let digits = String(value ?? '').replace(/\D+/g, '').trim();
+  if (digits.length === 11 && digits.startsWith('1')) digits = digits.slice(1);
+  return digits || fallback;
 }
 
 function pickYesNo(field, wantYes) {
@@ -130,6 +291,12 @@ function pickDisclosureOption(field) {
 
 function resolveHardRules(field, profile) {
   const text = fieldText(field);
+  if (isDescriptiveTextField(field) && !isChoiceField(field)) return null;
+  if (isNumericExperienceField(field)) return null;
+
+  if (/\bgpa\b|\bgrade point average\b/.test(text)) {
+    return { answer: '__SKIP__', source: 'rule' };
+  }
 
   const workEligibility = resolveWorkEligibility(field, profile);
   if (workEligibility) return workEligibility;
@@ -158,6 +325,14 @@ function resolveHardRules(field, profile) {
     return { answer: 'Yes', source: 'rule' };
   }
 
+  if (
+    /(understand|accept|acknowledge|confirm)/i.test(text) &&
+    /(equal employment opportunity|eeo|diversity and inclusion|non-?discrimination|harassment)/i.test(text)
+  ) {
+    if (field.options && field.options.length) return pickYesNo(field, true);
+    return { answer: 'Yes', source: 'rule' };
+  }
+
   if (/driver'?s\s+licen[cs]e|valid\s+licen[cs]e|hold\s+a\s+licen[cs]e/.test(text)) {
     if (field.options && field.options.length) return pickYesNo(field, true);
     return { answer: 'Yes', source: 'rule' };
@@ -178,9 +353,43 @@ function resolveHardRules(field, profile) {
     return { answer: 'No', source: 'rule' };
   }
 
-  if (/worked\s+(for|with|here|at)\s+(us|this\s+company)|previously\s+work(?:ed)?\s+(here|for\s+us)|have\s+you\s+ever\s+work(?:ed)?|previous.*employee|former.*employee|rehire|re-?hire/i.test(text)) {
+  if (/\bhow\s+did\s+you\s+hear\s+about\s+(us|this role|this position|this job)\b|\bsource\b.*\bapplication\b/i.test(text)) {
+    if (field.options && field.options.length) {
+      const indeed = optionList(field).find(o => /\bindeed\b/i.test(o));
+      if (indeed) return { answer: indeed, source: 'rule' };
+    }
+    return { answer: 'Indeed', source: 'rule' };
+  }
+
+  if (/worked\s+(for|with|here|at)\s+(us|this\s+company)|previously\s+work(?:ed)?\s+(here|for\s+us)|have\s+you\s+ever\s+(?:worked|been\s+employed)|have\s+you\s+ever\s+been\s+employed\s+by|been\s+employed\s+by\s+(infosys|us|this\s+company)|previous.*employee|former.*employee|rehire|re-?hire/i.test(text)) {
     if (field.options && field.options.length) return pickYesNo(field, false);
     return { answer: 'No', source: 'rule' };
+  }
+
+  if (/at\s+least\s+18|over\s+18|18\s+years?\s+of\s+age|be\s+18|minimum\s+age/i.test(text) &&
+      isChoiceField(field)) {
+    return pickYesNo(field, true);
+  }
+
+  if (/drug\s+test|substance\s+test|substance\s+screen/i.test(text) &&
+      isChoiceField(field)) {
+    return pickYesNo(field, true);
+  }
+
+  if (/convicted|felony|criminal\s+charge|criminal\s+offence|pending\s+charge/i.test(text) &&
+      isChoiceField(field) &&
+      !/background\s+check|screening|consent/i.test(text)) {
+    return pickYesNo(field, false);
+  }
+
+  if (/work\s+for\s+any\s+of|ever\s+work(?:ed)?\s+at\s+any/i.test(text) &&
+      isChoiceField(field)) {
+    return pickYesNo(field, false);
+  }
+
+  if (/lgbtq|sexual\s+orientation|sexual\s+identity/i.test(text) &&
+      isChoiceField(field)) {
+    return pickDisclosureOption(field);
   }
 
   if (/\b(gender|sex|pronouns?|ethnicity|race|racial|disability|disabled|veteran|aboriginal|indigenous|visible\s+minority|self-?identify)\b/i.test(text)) {
@@ -246,17 +455,66 @@ function pickAvailabilityAnswer(field) {
 function pickCountryOptionAnswer(field, profile) {
   const opts = optionList(field);
   if (!opts.length) return null;
-  const preferred = String(profile.country || '').trim().toLowerCase();
+  const preferred = normalizeCountryName(profile.country || '');
   if (!preferred) return null;
 
-  const exact = opts.find(o => o.trim().toLowerCase() === preferred);
+  const exact = opts.find(o => normalizeCountryName(o) === preferred);
   if (exact) return { answer: exact, source: 'profile' };
 
+  const aliases = preferred === 'canada'
+    ? ['canada']
+    : preferred === 'united states'
+      ? ['united states', 'usa']
+      : [preferred];
+
+  const aliasMatch = opts.find(o => {
+    const normalized = normalizeCountryName(o);
+    return aliases.some(alias => normalized === alias || normalized.includes(alias));
+  });
+  if (aliasMatch) return { answer: aliasMatch, source: 'profile' };
+
+  if (!looksLikeCountryOptionList(opts)) return null;
+
   const partial = opts.find(o => {
-    const v = o.trim().toLowerCase();
-    return v.includes(preferred) || preferred.includes(v);
+    const normalized = normalizeCountryName(o);
+    return preferred.length >= 5 && normalized.includes(preferred);
   });
   if (partial) return { answer: partial, source: 'profile' };
+  return null;
+}
+
+function pickDialCodeOptionAnswer(field, profile) {
+  const opts = optionList(field);
+  if (!opts.length) return null;
+
+  const normalized = opts.map(option => ({
+    raw: option,
+    lower: String(option || '').trim().toLowerCase(),
+  }));
+
+  const looksLikeDialCodeSelect = normalized.filter(({ lower }) => /\+\d+/.test(lower)).length >= Math.min(3, normalized.length);
+  if (!looksLikeDialCodeSelect) return null;
+
+  const preferredCountry = String(profile.country || '').trim().toLowerCase();
+  const countryAliases = preferredCountry === 'canada'
+    ? ['canada', 'ca', 'north america']
+    : preferredCountry
+      ? [preferredCountry]
+      : [];
+
+  for (const alias of countryAliases) {
+    const exactCountry = normalized.find(option => option.lower.includes(alias));
+    if (exactCountry) return { answer: exactCountry.raw, source: 'profile' };
+  }
+
+  const northAmerica = normalized.find(option =>
+    /\(\+1\)/.test(option.lower) && /\b(canada|united states|usa|us)\b/.test(option.lower)
+  );
+  if (northAmerica) return { answer: northAmerica.raw, source: 'profile' };
+
+  const canadaOnly = normalized.find(option => /\bcanada\b/.test(option.lower));
+  if (canadaOnly) return { answer: canadaOnly.raw, source: 'profile' };
+
   return null;
 }
 
@@ -424,6 +682,57 @@ function pickAvailabilityCheckboxAnswers(field) {
     [/\bmonday\b.*\bfriday\b/i, /\bmon(?:day)?\s*-\s*fri(?:day)?\b/i, /\bweekdays?\b/i, /\bdays?\b/i],
     [/\bmorning\b/i, /\bday\b/i, /\bafternoon\b/i]
   );
+}
+
+function pickOfficeLocationCheckboxAnswers(field, profile) {
+  const opts = optionList(field);
+  if (!opts.length) return null;
+
+  const normalized = opts.map(option => ({
+    raw: option,
+    lower: String(option || '').trim().toLowerCase(),
+  }));
+
+  const profileCity = String(profile.city || '').trim().toLowerCase();
+  const profileProvince = String(profile.province || '').trim().toLowerCase();
+  const profileCountry = normalizeCountryName(profile.country || '');
+
+  if (profileCity) {
+    const exactCity = normalized.find(option => option.lower === profileCity);
+    if (exactCity) return { answer: [exactCity.raw], source: 'profile' };
+
+    const partialCity = normalized.find(option =>
+      option.lower.includes(profileCity) || profileCity.includes(option.lower)
+    );
+    if (partialCity) return { answer: [partialCity.raw], source: 'profile' };
+  }
+
+  const provinceOfficePreference = {
+    bc: ['vancouver', 'surrey', 'burnaby', 'richmond', 'victoria', 'kelowna', 'kamloops'],
+    'british columbia': ['vancouver', 'surrey', 'burnaby', 'richmond', 'victoria', 'kelowna', 'kamloops'],
+    ab: ['calgary', 'edmonton'],
+    alberta: ['calgary', 'edmonton'],
+    on: ['toronto', 'ottawa', 'mississauga', 'waterloo'],
+    ontario: ['toronto', 'ottawa', 'mississauga', 'waterloo'],
+    qc: ['montreal', 'québec', 'quebec'],
+    quebec: ['montreal', 'québec', 'quebec'],
+  };
+
+  const preferredCities = provinceOfficePreference[profileProvince] || [];
+  for (const city of preferredCities) {
+    const match = normalized.find(option => option.lower === city || option.lower.includes(city));
+    if (match) return { answer: [match.raw], source: 'profile' };
+  }
+
+  if (profileCountry === 'canada') {
+    const canadianFallbacks = ['vancouver', 'toronto', 'calgary', 'ottawa', 'montreal'];
+    for (const city of canadianFallbacks) {
+      const match = normalized.find(option => option.lower === city || option.lower.includes(city));
+      if (match) return { answer: [match.raw], source: 'profile' };
+    }
+  }
+
+  return null;
 }
 
 function normalizeCountryName(value) {
@@ -611,6 +920,12 @@ function estimateExperienceYears(field, profile) {
 function resolveProfileBoundField(field, profile) {
   const text = fieldText(field);
   const type = (field.type || field.tag || '').toLowerCase();
+  const hasStructuredOptions = Array.isArray(field.options) && field.options.length > 0;
+
+  if (type === 'select' || type === 'aria-radio') {
+    const dialCodePick = pickDialCodeOptionAnswer(field, profile);
+    if (dialCodePick) return dialCodePick;
+  }
 
   if (/salary|compensation|ctc|wage|remuneration|\bpay\b|annual.*salary|salary.*annual|expected.*salary|salary.*expect|desired.*salary|salary.*desired|salary.*range|indicate.*salary/i.test(text))
     return { answer: profileValueOrSkip(profile.salary), source: 'profile' };
@@ -622,7 +937,7 @@ function resolveProfileBoundField(field, profile) {
     return { answer: profileValueOrSkip(profile.email), source: 'profile' };
 
   if (type === 'tel' || /\b(phone|mobile|cell|telephone)\b/.test(text))
-    return { answer: profileValueOrSkip(profile.phone), source: 'profile' };
+    return { answer: phoneDigitsOrSkip(profile.phone), source: 'profile' };
 
   if (/first[\s._-]?name|given[\s._-]?name|fname/.test(text))
     return { answer: profile.firstName || null, source: 'profile' };
@@ -706,6 +1021,12 @@ function resolveProfileBoundField(field, profile) {
   if (/\b(postal|zip)[\s_-]?(code)?\b/.test(text))
     return { answer: profileValueOrSkip(profile.postal), source: 'profile' };
 
+  if (/\b(address\s*(line\s*)?1|address\s*1|street\s+address)\b/.test(text))
+    return { answer: profileValueOrSkip(profile.address), source: 'profile' };
+
+  if (/\b(address\s*(line\s*)?2|address\s*2|apartment|apt\.?|suite|unit)\b/.test(text))
+    return null;
+
   if (/\b(referred\s+by(\s*\(|\b)|(an?\s+)?employee\s+referral|internal\s+referral|referred\s+by\s+(a\s+)?current\s+employee)\b/i.test(text)) {
     return null;
   }
@@ -721,6 +1042,36 @@ function resolveProfileBoundField(field, profile) {
   if (/linkedin/.test(text))
     return { answer: profileValueOrSkip(profile.linkedin), source: 'profile' };
 
+  if (/\b(field|area)\s+of\s+study\b|\bmajor\b|\bspeciali[sz]ation\b/.test(text)) {
+    const fieldOfStudy = inferFieldOfStudy(profile);
+    return { answer: profileValueOrSkip(fieldOfStudy), source: 'profile' };
+  }
+
+  if (/\bgraduation\s+year\b|\bgrad\s+year\b|\byear\s+of\s+graduation\b/.test(text)) {
+    const gradYear = inferGradYear(profile);
+    return { answer: profileValueOrSkip(gradYear), source: 'profile' };
+  }
+
+  if (/\bgpa\b|\bgrade point average\b/.test(text))
+    return null;
+
+  if (/\bmost\s+recent\s+school\b|\beducation\s+institution\b|\bschool\b/.test(text) && !/\b(field|area|graduation|degree)\b/.test(text)) {
+    const schoolName = inferSchoolName(profile);
+    return { answer: profileValueOrSkip(schoolName, profile.education || '__SKIP__'), source: 'profile' };
+  }
+
+  if (/\bmost\s+recent\s+job\s+title\b|\bcurrent\s+job\s+title\b/.test(text))
+    return { answer: profileValueOrSkip(inferShortHeadline(profile), profile.headline || '__SKIP__'), source: 'profile' };
+
+  if (/\bmost\s+recent\s+company\b|\bcurrent\s+company\b|\bemployer\b/.test(text))
+    return null;
+
+  if (/\bstart\s+year\b/.test(text))
+    return null;
+
+  if (/\bend\s+year\b/.test(text))
+    return null;
+
   if (
     type === 'url' ||
     /portfolio|personal[\s_-]?site|personal[\s_-]?website|website[\s_-]?url|github|gitlab/.test(text)
@@ -732,6 +1083,7 @@ function resolveProfileBoundField(field, profile) {
   // this position" can never match here after the early-exit above.
   if (
     /\b(headline|current[\s._-]?title|job[\s._-]?title|position|role)\b/.test(text) &&
+    !isChoiceField(field) &&
     !/salary|compensation|expectations|annual|indicate|range|\bpay\b/i.test(text) &&
     !isAvailabilityOrStartQuestion(text) &&
     !isNumericExperienceField(field) &&
@@ -741,7 +1093,12 @@ function resolveProfileBoundField(field, profile) {
   )
     return { answer: profile.headline || null, source: 'profile' };
 
-  if (/\b(summary|about[\s_-]?(me|you|yourself)|bio|professional[\s_-]?summary|tell\s+us\s+about)\b/.test(text) && !isAvailabilityOrStartQuestion(text) && !isNumericExperienceField(field))
+  if (
+    /\b(summary|about[\s_-]?(me|you|yourself)|bio|professional[\s_-]?summary|tell\s+us\s+about\s+(yourself|you))\b/.test(text) &&
+    !/about\s+a\s+time|specific\s+example|give\s+us\s+an?\s+example|how\s+did\s+you|what\s+does|what'?s\s+one\s+thing/i.test(text) &&
+    !isAvailabilityOrStartQuestion(text) &&
+    !isNumericExperienceField(field)
+  )
     return { answer: profile.summary || null, source: 'profile' };
 
   if (
@@ -757,8 +1114,15 @@ function resolveProfileBoundField(field, profile) {
 function resolveHelpfulDefaultField(field, profile) {
   const text = fieldText(field);
   const type = (field.type || field.tag || '').toLowerCase();
+  const descriptiveText = isDescriptiveTextField(field);
+  const choiceField = isChoiceField(field);
 
   if (isCheckboxGroupField(field)) {
+    if (/location|located near one of our offices|which offices|office locations?|interested in.*locations?|geographically located near/i.test(text)) {
+      const officeLocationPick = pickOfficeLocationCheckboxAnswers(field, profile);
+      if (officeLocationPick) return officeLocationPick;
+    }
+
     if (/preferred\s+employment|employment\s+type|type\s+of\s+employment|full[-\s]?time|part[-\s]?time|contract/.test(text)) {
       return pickCheckboxGroupAnswers(
         field,
@@ -772,20 +1136,55 @@ function resolveHelpfulDefaultField(field, profile) {
     }
   }
 
-  if (/worked\s+(for|with|here|at)\s+(us|this\s+company|infosys|accenture|amazon|google|microsoft)|ever\s+(work(?:ed)?|employ(?:ed)?)\s+(for|at|by)\s+us|prev(?:ious)?.*employ|former.*employ|prior.*position.*this.*company|previously\s+work(?:ed)?\s+(here|for\s+us)|have\s+you\s+ever\s+work(?:ed)?|employed\s+by\s+us|rehire|re-?hire|\bworked\.?here\b|\bprevious.*employee\b|\bformer.*employee\b/i.test(text))
+  if (choiceField && /worked\s+(for|with|here|at)\s+(us|this\s+company|infosys|accenture|amazon|google|microsoft)|ever\s+(work(?:ed)?|employ(?:ed)?)\s+(for|at|by)\s+us|prev(?:ious)?.*employ|former.*employ|prior.*position.*this.*company|previously\s+work(?:ed)?\s+(here|for\s+us)|have\s+you\s+ever\s+work(?:ed|been employed)?|been\s+employed\s+by\s+(infosys|us|this\s+company)|employed\s+by\s+us|rehire|re-?hire|\bworked\.?here\b|\bprevious.*employee\b|\bformer.*employee\b/i.test(text))
     return pickYesNo(field, false);
 
-  if (/criminal.*record|criminal.*conviction|criminal.*charge|convicted|been\s+arrested|pending\s+charge|pardon.*granted|pardon.*not\s+been\s+granted|felony|misdemeanor|background\s+check.*criminal|criminal\s+background\s+check|reference\s+check|education\s+verification|\boffence\b|\boffense\b/i.test(text))
+  if (choiceField && /\bdegree\b|\beducation\s+level\b|\bhighest\s+level\s+of\s+education\b/.test(text)) {
+    const educationMatch = pickEducationLevelAnswer(field, profile);
+    if (educationMatch) return educationMatch;
+  }
+
+  if (choiceField) {
+    const opts = optionList(field);
+
+    if (opts.some(o => /\bindeed\b/i.test(o)) && /\b(source|hear about|how did you hear)\b/i.test(text)) {
+      const indeed = opts.find(o => /\bindeed\b/i.test(o));
+      if (indeed) return { answer: indeed, source: 'rule' };
+    }
+
+    if (/travel|open to travel|willing to travel/i.test(text)) {
+      return pickYesNo(field, true);
+    }
+
+    if (
+      /(understand|accept|acknowledge|confirm)/i.test(text) &&
+      /(equal employment opportunity|eeo|diversity and inclusion|non-?discrimination|harassment)/i.test(text)
+    ) {
+      return pickYesNo(field, true);
+    }
+
+    if (
+      opts.some(o => /\bbachelor/i.test(o)) &&
+      opts.some(o => /\b(master|associate|certificate|diploma|no final certificate)\b/i.test(o))
+    ) {
+      const educationMatch = pickEducationLevelAnswer(field, profile);
+      if (educationMatch) return educationMatch;
+    }
+  }
+
+  if (choiceField && /criminal.*record|criminal.*conviction|criminal.*charge|convicted|been\s+arrested|pending\s+charge|pardon.*granted|pardon.*not\s+been\s+granted|felony|misdemeanor|background\s+check.*criminal|criminal\s+background\s+check|reference\s+check|education\s+verification|\boffence\b|\boffense\b/i.test(text))
     return pickYesNo(field, false);
 
-  if (/legal\s+age|at\s+least\s+18|over\s+18|18\s+years?\s+of\s+age/.test(text))
+  if (choiceField && /legal\s+age|at\s+least\s+18|over\s+18|18\s+years?\s+of\s+age/.test(text))
     return pickYesNo(field, true);
 
-  if (/completed\s+this\s+application\s+yourself|did\s+you\s+complete\s+this\s+application|filled\s+out\s+this\s+application\s+yourself/.test(text))
+  if (choiceField && /completed\s+this\s+application\s+yourself|did\s+you\s+complete\s+this\s+application|filled\s+out\s+this\s+application\s+yourself/.test(text))
     return pickYesNo(field, true);
 
-  if (/driver'?s\s+licen[cs]e|valid\s+licen[cs]e|hold\s+a\s+licen[cs]e/.test(text))
+  if (choiceField && /driver'?s\s+licen[cs]e|valid\s+licen[cs]e|hold\s+a\s+licen[cs]e/.test(text))
     return pickYesNo(field, true);
+
+  if (descriptiveText) return null;
 
   if (
     /additional.*comment|anything.*else.*add|other.*comment|comments?\s*(\(optional\))?$|is\s+there\s+anything\s+else|please\s+provide\s+any\s+(additional|other|further)/i.test(text) &&

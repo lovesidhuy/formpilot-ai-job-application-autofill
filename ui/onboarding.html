@@ -1366,10 +1366,26 @@
 
               <div class="grid-2">
                 <div class="field">
+                  <span class="lbl">Highest education level</span>
+                  <select id="ob2-education-level">
+                    <option value="">Select highest level</option>
+                    <option value="Doctorate">Doctorate</option>
+                    <option value="Master's degree">Master's degree</option>
+                    <option value="Bachelor's degree">Bachelor's degree</option>
+                    <option value="Associate degree / DEC / DCS">Associate degree / DEC / DCS</option>
+                    <option value="Certificate / Diploma / Trade certificate">Certificate / Diploma / Trade certificate</option>
+                    <option value="Secondary School">Secondary School</option>
+                    <option value="No diploma">No diploma</option>
+                  </select>
+                </div>
+
+                <div class="field">
                   <span class="lbl">Field of study</span>
                   <input type="text" id="ob2-field-of-study" placeholder="Computer Science" />
                 </div>
+              </div>
 
+              <div class="grid-2">
                 <div class="field">
                   <span class="lbl">Graduation year</span>
                   <input type="text" id="ob2-grad-year" placeholder="2026" />
@@ -1410,6 +1426,7 @@
     </div>
   </div>
 
+  <script src="../core/aiJson.js"></script>
   <script src="onboarding.js"></script>
 </body>
 </html>

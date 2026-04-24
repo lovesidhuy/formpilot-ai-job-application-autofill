@@ -29,7 +29,7 @@
     "https://*.linkedin.com/*"
   ],
   "action": {
-    "default_popup": "popup.html",
+    "default_popup": "ui/popup.html",
     "default_icon": {
       "16": "icons/icon16.png",
       "48": "icons/icon48.png",
@@ -45,6 +45,23 @@
         "<all_urls>"
       ],
       "js": [
+        "core/stepRouter.js",
+        "core/runtimeDom.js",
+        "core/pageClassifier.js",
+        "core/questionText.js",
+        "core/questionRegistry.js",
+        "core/jobContext.js",
+        "core/flowState.js",
+        "rules.js",
+        "harvesters/generic.js",
+        "harvesters/greenhouse.js",
+        "harvesters/workday.js",
+        "harvesters/lever.js",
+        "harvesters/smartapply.js",
+        "core/logger.js",
+        "core/answerPipeline.js",
+        "core/applyAndVerify.js",
+        "core/flowRunner.js",
         "content.js"
       ],
       "run_at": "document_idle"
@@ -53,8 +70,9 @@
   "web_accessible_resources": [
     {
       "resources": [
-        "onboarding.html",
-        "onboarding.js",
+        "ui/onboarding.html",
+        "ui/onboarding.js",
+        "core/aiJson.js",
         "profile.js",
         "rules.js"
       ],

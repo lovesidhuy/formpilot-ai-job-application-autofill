@@ -6,6 +6,7 @@
 //
 // SCHEMA:
 //   - Added `linkedin`     — rules.js resolveDirectField now references profile.linkedin
+//   - Added `educationLevel` — explicit highest education level for dropdown questions
 //   - Added `ollamaModel` / `ollamaUrl` — single source of truth; background.js
 //     loadFullProfile() previously duplicated these reads outside of profile.js
 //
@@ -77,6 +78,7 @@ const PROFILE_SCHEMA = {
   headline:        '',          // current job title
   summary:         '',          // professional summary / about me
   education:       '',          // degree, institution, graduation year
+  educationLevel:  '',          // explicit highest education level for dropdown questions
   experienceYears: '0',
   skills:          [],          // string[]
   portfolio:       '',          // personal site / GitHub / portfolio URL
@@ -107,6 +109,7 @@ const PROFILE_STORAGE_KEYS = [
   'city', 'province', 'country', 'postal',
   // Professional
   'headline', 'summary', 'education',
+  'educationLevel',
   'experienceYears', 'skills', 'portfolio', 'linkedin',
   // Eligibility
   'workAuth', 'sponsorship',
@@ -165,10 +168,14 @@ function flattenProfile(profile) {
     headline:        profile.headline        || '',
     summary:         profile.summary         || '',
     education:       profile.education       || '',
+    educationLevel:  profile.educationLevel  || '',
+    fieldOfStudy:    profile.fieldOfStudy    || '',
+    gradYear:        String(profile.gradYear || ''),
     experienceYears: String(profile.experienceYears || '0'),
     skills:          JSON.stringify(parseSkills(profile.skills)),
     portfolio:       profile.portfolio       || '',
     linkedin:        profile.linkedin        || '',
+    address:         profile.address         || '',
     // Eligibility
     workAuth:        profile.workAuth  !== false,   // default true
     sponsorship:     profile.sponsorship === true,  // default false
@@ -211,10 +218,14 @@ function unflattenProfile(data) {
     headline:        data.headline        || '',
     summary:         data.summary         || '',
     education:       data.education       || '',
+    educationLevel:  data.educationLevel  || '',
+    fieldOfStudy:    data.fieldOfStudy    || '',
+    gradYear:        String(data.gradYear || ''),
     experienceYears: String(data.experienceYears || '0'),
     skills:          parseSkills(data.skills),
     portfolio:       data.portfolio       || '',
     linkedin:        data.linkedin        || '',
+    address:         data.address         || '',
     // Eligibility
     workAuth:        data.workAuth  !== false,
     sponsorship:     data.sponsorship === true,

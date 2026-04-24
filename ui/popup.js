@@ -22,8 +22,96 @@
 const $  = id  => document.getElementById(id);
 const $$ = sel => document.querySelectorAll(sel);
 const DEFAULT_OLLAMA_MODEL = 'phi3:mini';
+const CONTENT_SCRIPT_FILES = [
+  'core/stepRouter.js',
+  'core/runtimeDom.js',
+  'core/pageClassifier.js',
+  'core/questionText.js',
+  'core/questionRegistry.js',
+  'core/jobContext.js',
+  'core/flowState.js',
+  'rules.js',
+  'harvesters/generic.js',
+  'harvesters/greenhouse.js',
+  'harvesters/workday.js',
+  'harvesters/lever.js',
+  'harvesters/smartapply.js',
+  'core/logger.js',
+  'core/answerPipeline.js',
+  'core/applyAndVerify.js',
+  'core/flowRunner.js',
+  'content.js',
+];
 
 function delay(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+function sendTabMessage(tabId, message) {
+  return new Promise((resolve, reject) => {
+    chrome.tabs.sendMessage(tabId, message, response => {
+      if (chrome.runtime.lastError) {
+        reject(new Error(chrome.runtime.lastError.message || 'Connection error'));
+        return;
+      }
+      resolve(response);
+    });
+  });
+}
+
+async function inspectQfRuntime(tabId) {
+  try {
+    const [result] = await chrome.scripting.executeScript({
+      target: { tabId },
+      func: () => ({
+        qfLoaded: !!globalThis.__qfLoaded,
+        flowRunnerLoaded: !!globalThis.__qfFlowRunnerLoaded,
+        isIndeedPageLoaded: typeof globalThis.isIndeedPage === 'function',
+        classifyCurrentPageLoaded: typeof globalThis.classifyCurrentPage === 'function',
+        href: location.href,
+      }),
+    });
+    return result?.result || {
+      qfLoaded: false,
+      flowRunnerLoaded: false,
+      isIndeedPageLoaded: false,
+      classifyCurrentPageLoaded: false,
+      href: '',
+    };
+  } catch (_) {
+    return {
+      qfLoaded: false,
+      flowRunnerLoaded: false,
+      isIndeedPageLoaded: false,
+      classifyCurrentPageLoaded: false,
+      href: '',
+    };
+  }
+}
+
+async function ensureQfReady(tabId) {
+  const runtime = await inspectQfRuntime(tabId);
+  const missingCoreRuntime =
+    !runtime.qfLoaded ||
+    !runtime.flowRunnerLoaded ||
+    !runtime.isIndeedPageLoaded ||
+    !runtime.classifyCurrentPageLoaded;
+
+  if (missingCoreRuntime) {
+    await chrome.scripting.executeScript({
+      target: { tabId },
+      files: CONTENT_SCRIPT_FILES,
+    });
+  }
+
+  for (let attempt = 0; attempt < 10; attempt++) {
+    try {
+      const response = await sendTabMessage(tabId, { action: 'PING_QF' });
+      if (response?.ok) return response;
+    } catch (_) {}
+    await delay(150);
+  }
+
+  throw new Error('Could not reach page — try refreshing it first.');
+}
 
 function normalizeOllamaUrl(url) {
   let v = String(url || '').trim();
@@ -134,6 +222,10 @@ function classForLogEntry(text) {
   if (text.startsWith('⚠'))                          return 'warn';
   if (text.startsWith('✗'))                          return 'err';
   if (text.startsWith('⊘') || text.startsWith('🛑')) return 'stop';
+  if (text.startsWith('[Questions]'))                return 'info';
+  if (text.startsWith('[AI]'))                       return 'nav';
+  if (text.startsWith('[Rule]') || text.startsWith('[Profile]') || text.startsWith('[Default]') || text.startsWith('[Memory]')) return 'ok';
+  if (text.startsWith('[Skip]'))                     return 'warn';
   return '';
 }
 
@@ -181,8 +273,10 @@ function parseBoolLine(text, prefix) {
 
 function parseFlowReview(lines = []) {
   const questions = new Map();
+  const generalIssues = [];
+  const blockerWarnings = [];
+  const navIssues = [];
   let current = null;
-  let navBlock = '';
 
   const ensureQuestion = label => {
     const key = stripRequiredMark(label);
@@ -192,76 +286,187 @@ function parseFlowReview(lines = []) {
         required: false,
         chosenAnswer: '',
         applied: false,
-        stillBlocking: false,
-        blockingReason: '',
-        constraintReason: '',
+        source: '',
+        status: 'pending',
+        reason: '',
       });
     }
     return questions.get(key);
   };
 
+  const extractQuoted = text => {
+    const match = String(text || '').match(/'([^']+)'/);
+    return match ? match[1].trim() : '';
+  };
+
+  const parseQuestionLine = text => {
+    const match = String(text || '').match(/^\[Questions\]\s+([^:]+):\s+'([^']+)'(?:\s+opts=\[(.*)\])?/);
+    if (!match) return null;
+    const [, type, label, optionsRaw] = match;
+    return {
+      type: String(type || '').trim(),
+      label: String(label || '').trim(),
+      options: String(optionsRaw || '').trim(),
+    };
+  };
+
+  const findQuestionByPrefix = (label, createIfMissing = false) => {
+    const cleanLabel = stripRequiredMark(label);
+    if (!cleanLabel) return null;
+    if (questions.has(cleanLabel)) return questions.get(cleanLabel);
+    for (const [key, value] of questions.entries()) {
+      if (key.startsWith(cleanLabel) || cleanLabel.startsWith(key)) return value;
+    }
+    return createIfMissing ? ensureQuestion(cleanLabel) : null;
+  };
+
+  const reasonMatchesQuestionType = (item, reason) => {
+    const type = String(item?.type || '').toLowerCase();
+    const text = String(reason || '').toLowerCase();
+    if (!type || !text) return true;
+
+    if (text.includes('textarea')) return type === 'textarea';
+    if (text.includes('checkbox')) return type === 'checkbox_group' || type === 'checkbox-group' || type === 'consent_checkbox_group';
+    if (text.includes('radio')) return type === 'radio' || type === 'aria-radio';
+    if (text.includes('numeric')) return type === 'number';
+    if (text.includes('select')) return type === 'select';
+
+    return true;
+  };
+
   for (const line of lines) {
-    if (line.startsWith('harvested: ')) {
-      const raw = line.slice('harvested: '.length).trim();
-      current = ensureQuestion(raw);
-      current.required = /\*+$/.test(raw);
+    const questionInfo = parseQuestionLine(line);
+    if (questionInfo) {
+      current = ensureQuestion(questionInfo.label);
+      current.type = questionInfo.type;
+      current.options = questionInfo.options;
       continue;
     }
 
-    if (line.startsWith('chosenAnswer: ') && current) {
-      current.chosenAnswer = line.slice('chosenAnswer: '.length).trim();
+    if (line.startsWith('[Rule]') && current) {
+      current.chosenAnswer = extractQuoted(line);
+      current.source = 'rule';
       continue;
     }
 
-    if (line.startsWith('applied: ') && current) {
-      current.applied = /^true$/i.test(line.slice('applied: '.length).trim());
+    if (line.startsWith('[Default]') && current) {
+      current.chosenAnswer = extractQuoted(line);
+      current.source = 'default';
       continue;
     }
 
-    if (line.startsWith('stillBlocking: ') && current) {
-      const parsed = parseBoolLine(line, 'stillBlocking: ');
-      current.stillBlocking = parsed.value;
-      current.blockingReason = parsed.details;
+    if (line.startsWith('[Profile]') && current) {
+      current.chosenAnswer = extractQuoted(line);
+      current.source = 'profile';
       continue;
     }
 
-    if (line.startsWith('constraintValidation: ')) {
-      const details = line.slice('constraintValidation: '.length);
-      const arrowIdx = details.indexOf(' → ');
-      const label = arrowIdx === -1 ? details : details.slice(0, arrowIdx);
-      const reason = arrowIdx === -1 ? '' : details.slice(arrowIdx + 3).trim();
-      const item = ensureQuestion(label);
-      item.constraintReason = reason;
+    if (line.startsWith('[Memory]') && current) {
+      current.chosenAnswer = extractQuoted(line);
+      current.source = 'memory';
+      continue;
+    }
+
+    if (line.startsWith('[AI]') && current) {
+      const answerMatch = String(line).match(/→\s*(.+)$/);
+      current.chosenAnswer = answerMatch ? answerMatch[1].trim() : extractQuoted(line);
+      current.source = 'ai';
+      continue;
+    }
+
+    if (line.startsWith('[Skip] no answer found for: ')) {
+      const label = extractQuoted(line);
+      const item = findQuestionByPrefix(label, true);
+      if (item) {
+        item.status = 'skipped';
+        item.reason = 'No usable answer was found';
+        item.chosenAnswer = '__SKIP__';
+      }
       current = item;
       continue;
     }
 
-    if (line.startsWith('✗ Navigation blocked on ')) {
-      navBlock = line.replace(/^✗\s*/, '').trim();
+    if (line.startsWith('[Skip] ')) {
+      const label = extractQuoted(line);
+      const item = findQuestionByPrefix(label, true);
+      if (item) {
+        item.status = 'skipped';
+        item.reason = item.reason || 'Skipped by the runner';
+        if (!item.chosenAnswer) item.chosenAnswer = '__SKIP__';
+      }
+      current = item;
+      continue;
+    }
+
+    if (line.startsWith('✓ Selected (retry): ') && current) {
+      current.applied = true;
+      current.status = 'ok';
+      current.reason = '';
+      continue;
+    }
+
+    if (line.startsWith('✓ Selected: ') && current) {
+      current.applied = true;
+      current.status = 'ok';
+      current.reason = '';
+      continue;
+    }
+
+    if (line.startsWith('⚠ Applied but verification failed: ')) {
+      const failureMatch = String(line).match(/:\s*'([^']+)'\s*→\s*'([^']+)'/);
+      const item = findQuestionByPrefix(failureMatch?.[1] || '', true);
+      if (item) {
+        item.status = 'blocked';
+        item.reason = 'Applied answer did not verify on the page';
+        item.chosenAnswer = failureMatch?.[2] || item.chosenAnswer;
+      }
+      current = item || current;
+      continue;
+    }
+
+    if (line.startsWith('✗ Failed: ')) {
+      const failureMatch = String(line).match(/^✗ Failed:\s*(.*?)\s+—\s+(.*)$/);
+      const label = failureMatch?.[1] || '';
+      const reason = failureMatch?.[2] || 'Failed';
+      const item = findQuestionByPrefix(label, false);
+      if (item && reasonMatchesQuestionType(item, reason)) {
+        item.status = 'blocked';
+        item.reason = reason;
+      } else {
+        generalIssues.push(`Failed: ${label ? `${label} — ` : ''}${reason}`);
+      }
+      current = item || current;
+      continue;
+    }
+
+    if (line.startsWith('⚠ Blocking fields remain: ')) {
+      blockerWarnings.push(line.replace(/^⚠\s*/, '').trim());
+      continue;
+    }
+
+    if (line.startsWith('✗ Skipping — ')) {
+      generalIssues.push(line.replace(/^✗\s*/, '').trim());
+      continue;
+    }
+
+    if (line.includes('Navigation stuck after clicking Continue')) {
+      navIssues.push('Continue did not advance the page');
+      continue;
+    }
+
+    if (line.startsWith('✗ No Continue button') || line.includes('No Continue button found')) {
+      navIssues.push(line.replace(/^✗\s*/, '').trim());
     }
   }
 
   const items = [...questions.values()];
   const needsInput = items
-    .filter(item => item.stillBlocking || item.constraintReason || item.chosenAnswer === '__SKIP__' || !item.applied)
+    .filter(item => item.status === 'blocked' || item.status === 'skipped' || (!item.applied && item.chosenAnswer === '__SKIP__'))
     .map(item => {
-      let status = 'ok';
-      let reason = '';
-
-      if (item.constraintReason) {
-        status = 'blocked';
-        reason = item.constraintReason;
-      } else if (item.stillBlocking) {
-        status = 'blocked';
-        reason = item.blockingReason || 'Still blocked on the page';
-      } else if (item.chosenAnswer === '__SKIP__') {
-        status = 'skipped';
-        reason = 'No usable answer was generated';
-      } else if (!item.applied) {
-        status = 'skipped';
-        reason = 'Answer was generated but could not be applied';
-      }
-
+      const status = item.status === 'blocked' ? 'blocked' : 'skipped';
+      const reason = item.reason || (status === 'blocked'
+        ? 'Still blocked on the page'
+        : 'No usable answer was generated');
       return { ...item, status, reason };
     })
     .sort((a, b) => {
@@ -271,10 +476,12 @@ function parseFlowReview(lines = []) {
 
   return {
     needsInput,
-    successCount: items.filter(item => item.applied && !item.stillBlocking && !item.constraintReason).length,
+    successCount: items.filter(item => item.applied && item.status !== 'blocked').length,
     blockedCount: needsInput.filter(item => item.status === 'blocked').length,
     skippedCount: needsInput.filter(item => item.status === 'skipped').length,
-    navBlock,
+    navBlock: navIssues[0] || '',
+    blockerWarning: blockerWarnings[0] || '',
+    generalIssue: generalIssues[0] || '',
   };
 }
 
@@ -290,7 +497,7 @@ function renderReviewPanel(state = {}) {
   const { status = 'idle', log = [] } = state;
   const review = parseFlowReview(log);
   const hasRun = Array.isArray(log) && log.length > 0;
-  const hasIssues = review.needsInput.length > 0 || !!review.navBlock;
+  const hasIssues = review.needsInput.length > 0 || !!review.navBlock || !!review.blockerWarning || !!review.generalIssue;
 
   card.classList.toggle('show', hasRun);
   restartBtn.disabled = status === 'running';
@@ -333,6 +540,30 @@ function renderReviewPanel(state = {}) {
           `<span class="review-status is-blocked">blocked</span>` +
         `</div>` +
         `<div class="review-meta">${escHtml(truncateText(review.navBlock, 240))}</div>` +
+      `</div>`
+    );
+  }
+
+  if (!review.navBlock && review.blockerWarning) {
+    fragments.push(
+      `<div class="review-item">` +
+        `<div class="review-item-top">` +
+          `<div class="review-question">Some questions may still need attention</div>` +
+          `<span class="review-status is-skipped">check page</span>` +
+        `</div>` +
+        `<div class="review-meta">${escHtml(truncateText(review.blockerWarning, 240))}</div>` +
+      `</div>`
+    );
+  }
+
+  if (!review.navBlock && !review.blockerWarning && review.generalIssue) {
+    fragments.push(
+      `<div class="review-item">` +
+        `<div class="review-item-top">` +
+          `<div class="review-question">Run note</div>` +
+          `<span class="review-status is-skipped">note</span>` +
+        `</div>` +
+        `<div class="review-meta">${escHtml(truncateText(review.generalIssue, 240))}</div>` +
       `</div>`
     );
   }
@@ -522,13 +753,10 @@ function initLiveListeners() {
     'firstName', 'lastName', 'email', 'phone',
     'city', 'province', 'country', 'postal',
     'headline', 'experienceYears', 'salary',
-    'summary', 'portfolio', 'linkedin', 'education'
+    'summary', 'portfolio', 'linkedin', 'education', 'educationLevel'
   ].forEach(id => {
     $(id)?.addEventListener('input', () => renderProfileHints());
-  });
-
-  chrome.runtime.onMessage.addListener(msg => {
-    if (msg.action === 'FLOW_STATE_UPDATED' && msg.state) applyFlowState(msg.state);
+    $(id)?.addEventListener('change', () => renderProfileHints());
   });
 
   chrome.storage.onChanged.addListener((changes, area) => {
@@ -613,7 +841,7 @@ const PROFILE_KEYS = [
   'city', 'province', 'country', 'postal',
   'headline', 'experienceYears', 'salary',
   'summary', 'portfolio', 'linkedin',
-  'education',
+  'education', 'educationLevel',
   'workAuth', 'sponsorship',
   'pref_remote', 'pref_relocate',
   'skills',
@@ -639,7 +867,7 @@ function loadFormData() {
       'city', 'province', 'country', 'postal',
       'headline', 'experienceYears', 'salary',
       'summary', 'portfolio', 'linkedin',
-      'education',
+      'education', 'educationLevel',
     ];
     textFields.forEach(key => {
       const el = $(key);
@@ -828,17 +1056,13 @@ function resolveSourceDisplay(src) {
 }
 
 function refreshMemory() {
-  chrome.runtime.sendMessage({ action: 'GET_MEMORY_STATS' }, res => {
-    if (chrome.runtime.lastError || !res) return; // suppress "Receiving end does not exist"
-    const persEl = $('mem-persistent');
-    const sessEl = $('mem-session');
-    if (persEl) persEl.textContent = res.persistent || 0;
-    if (sessEl) sessEl.textContent = res.session    || 0;
-  });
-
   chrome.storage.local.get(['qf_memory'], data => {
     const mem  = data.qf_memory || {};
     const list = $('memory-list');
+    const persEl = $('mem-persistent');
+    const sessEl = $('mem-session');
+    if (persEl) persEl.textContent = Object.keys(mem).length;
+    if (sessEl) sessEl.textContent = 0;
     if (!list) return;
 
     const entries = Object.entries(mem);
@@ -853,11 +1077,12 @@ function refreshMemory() {
     entries.slice(0, 50).forEach(([question, value]) => {
       const answer = value?.answer || '';
       const { label: srcLabel, cssClass: srcClass } = resolveSourceDisplay(value?.source || '');
+      const displayQuestion = value?.questionKey || question;
 
       const item = document.createElement('div');
       item.className = 'memory-item';
       item.innerHTML =
-        `<div class="memory-q">${escHtml(question.slice(0, 80))}</div>` +
+        `<div class="memory-q">${escHtml(String(displayQuestion).slice(0, 80))}</div>` +
         `<div class="memory-a">${escHtml(String(answer).slice(0, 80))}</div>` +
         `<div class="memory-meta"><span class="${srcClass}">${srcLabel}</span></div>`;
       list.appendChild(item);
@@ -1136,9 +1361,9 @@ function exportCurrentSession() {
 }
 
 function loadSessionLogs() {
-  chrome.runtime.sendMessage({ action: 'GET_SESSIONS' }, res => {
-    if (chrome.runtime.lastError || !res?.ok) return;
-    _logsSessions = res.sessions || [];
+  chrome.storage.local.get(['fp_sessions'], data => {
+    _logsSessions = Object.values(data.fp_sessions || {})
+      .sort((a, b) => (b.startTime || 0) - (a.startTime || 0));
     renderSessionList(_logsSessions);
   });
 }
@@ -1153,8 +1378,7 @@ function initLogsTab() {
 
   $('btn-clear-logs')?.addEventListener('click', () => {
     if (!confirm('Clear all debug logs? This cannot be undone.')) return;
-    chrome.runtime.sendMessage({ action: 'CLEAR_SESSIONS' }, () => {
-      void chrome.runtime.lastError;
+    chrome.storage.local.remove(['fp_sessions'], () => {
       _logsSessions = [];
       _logsSelectedSession = null;
       renderSessionList([]);
@@ -1230,6 +1454,7 @@ function initButtons() {
         portfolio:       $('portfolio')?.value.trim()       || '',
         linkedin:        $('linkedin')?.value.trim()        || '',
         education:       $('education')?.value.trim()       || '',
+        educationLevel:  $('educationLevel')?.value.trim()  || '',
         workAuth:        $('workAuth')?.checked    !== false,
         sponsorship:     $('sponsorship')?.checked === true,
         pref_remote:     $('pref_remote')?.checked   !== false,
@@ -1312,7 +1537,7 @@ function initButtons() {
 
   // ── Onboarding ──
   function openOnboarding() {
-    chrome.tabs.create({ url: chrome.runtime.getURL('onboarding.html') });
+    chrome.tabs.create({ url: chrome.runtime.getURL('ui/onboarding.html') });
   }
   $('btn-open-onboarding')?.addEventListener('click', openOnboarding);
   $('btn-open-onboarding-2')?.addEventListener('click', openOnboarding);
@@ -1325,8 +1550,7 @@ function initButtons() {
 
   $('btn-clear-memory')?.addEventListener('click', () => {
     if (!confirm('Clear all saved answers? This cannot be undone.')) return;
-    chrome.runtime.sendMessage({ action: 'CLEAR_MEMORY' }, () => {
-      void chrome.runtime.lastError; // suppress "Receiving end does not exist"
+    chrome.storage.local.remove(['qf_memory'], () => {
       refreshMemory();
       toast('Memory cleared ✓');
     });
@@ -1335,7 +1559,7 @@ function initButtons() {
   // ── Stop flow ──
   $('btn-stop-fill')?.addEventListener('click', () => {
     chrome.runtime.sendMessage({ action: 'CANCEL_FLOW' }, () => {
-      void chrome.runtime.lastError; // suppress "Receiving end does not exist"
+      void chrome.runtime.lastError;
       applyFlowState({
         status:   'stopped',
         step:     0,
@@ -1379,38 +1603,20 @@ function initButtons() {
       const tab = await getActiveTab();
       if (!tab || !tab.id) throw new Error('No active tab found');
 
-      await chrome.scripting
-        .executeScript({ target: { tabId: tab.id }, files: ['content.js'] })
-        .catch(() => {});
+      await ensureQfReady(tab.id);
 
-      await delay(300);
+      const result = await sendTabMessage(tab.id, { action: 'RUN_MULTI_STEP_FLOW', maxSteps: 12 });
+      if (!result) return;
 
-      chrome.tabs.sendMessage(tab.id, { action: 'RUN_MULTI_STEP_FLOW', maxSteps: 12 }, result => {
-        if (chrome.runtime.lastError) {
-          applyFlowState({
-            status:   'error',
-            step:     0,
-            maxSteps: 12,
-            filled:   0,
-            message:  'Could not reach page — try refreshing it first.',
-            log:      ['✗ ' + (chrome.runtime.lastError.message || 'Connection error')],
-          });
-          toast('Could not reach page — try refreshing.', 'warn');
-          return;
-        }
-
-        if (!result) return;
-
-        if (result.stoppedAtSubmit) {
-          toast(`✓ Ready to submit · ${result.totalFilled || 0} fields filled`);
-        } else if (result.ok) {
-          toast(`Flow finished · ${result.totalFilled || 0} fields filled`);
-        } else if (result.error === 'Cancelled by user') {
-          toast('Stopped.', 'warn', 2000);
-        } else if (result.error) {
-          toast(result.error, 'warn');
-        }
-      });
+      if (result.stoppedAtSubmit) {
+        toast(`✓ Ready to submit · ${result.totalFilled || 0} fields filled`);
+      } else if (result.ok) {
+        toast(`Flow finished · ${result.totalFilled || 0} fields filled`);
+      } else if (result.error === 'Cancelled by user') {
+        toast('Stopped.', 'warn', 2000);
+      } else if (result.error) {
+        toast(result.error, 'warn');
+      }
     } catch (err) {
       applyFlowState({
         status:   'error',
@@ -1451,21 +1657,18 @@ function initButtons() {
       const tab = await getActiveTab();
       if (!tab || !tab.id) throw new Error('No active tab found');
 
-      await chrome.scripting
-        .executeScript({ target: { tabId: tab.id }, files: ['content.js'] })
-        .catch(() => {});
+      await ensureQfReady(tab.id);
 
-      chrome.tabs.sendMessage(tab.id, { action: 'FILL_NAME_ONLY', profile }, res => {
-        if (chrome.runtime.lastError || !res) {
-          toast('Could not reach page. Try refreshing.', 'warn');
-          return;
-        }
-        if (res.status === 'ok' && res.filled > 0) {
-          toast(`Filled ${res.filled} name field${res.filled !== 1 ? 's' : ''} ✓`);
-        } else {
-          toast('No name fields found.', 'warn');
-        }
-      });
+      const res = await sendTabMessage(tab.id, { action: 'FILL_NAME_ONLY', profile });
+      if (!res) {
+        toast('Could not reach page. Try refreshing.', 'warn');
+        return;
+      }
+      if (res.status === 'ok' && res.filled > 0) {
+        toast(`Filled ${res.filled} name field${res.filled !== 1 ? 's' : ''} ✓`);
+      } else {
+        toast('No name fields found.', 'warn');
+      }
     } catch (e) {
       toast(e.message || String(e), 'warn');
     }

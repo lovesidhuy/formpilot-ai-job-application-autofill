@@ -36,12 +36,14 @@ Source and project updates: https://github.com/lovesidhuy
 
 Once saved, autofill order is: **profile → rules → AI fallback**.
 
-![Adobe Express - Screen Recording 2026-04-07 at 10 11 11 PM-5](https://github.com/user-attachments/assets/370c8e9c-2b51-41e6-a890-055f566c6464)
 
 Use **Settings → Test** to confirm Ollama is available before using AI-assisted answers.
 
 
-![Adobe Express - Screen Recording 2026-04-07 at 10 11 11 PM-6](https://github.com/user-attachments/assets/f37e4d24-efe8-4581-8884-866d15e05ca8)
+
+<img width="1435" height="778" alt="image" src="https://github.com/user-attachments/assets/19e70dab-7ff4-4156-b8d6-a0b6fc2962e6" />
+
+
 
 
 ---
@@ -55,6 +57,14 @@ Use **Settings → Test** to confirm Ollama is available before using AI-assiste
    - Click **Stop** to abort if the page behaves unexpectedly.
 ---
 
+![Adobe Express - Screen Recording 2026-04-14 at 5 10 07 PM](https://github.com/user-attachments/assets/17f3cbce-3f27-4ed9-b9f5-ea96f96101bb)
+
+
+![Adobe Express - Screen Recording 2026-04-14 at 5 12 24 PM-3](https://github.com/user-attachments/assets/b54927ca-2b86-4b22-8b5d-3509705eb734)
+
+![Adobe Express - Screen Recording 2026-04-14 at 5 12 24 PM-5](https://github.com/user-attachments/assets/476db65c-9f10-4799-84e9-3c05fffd8435)
+
+
 
 ## Ollama & Settings
 
@@ -64,14 +74,6 @@ Use **Settings → Test** to confirm Ollama is available before using AI-assiste
 - If Ollama is unavailable or CORS is not configured, FormPilot AI continues working with profile data and rules only.
 
 ---
-![Adobe Express - Screen Recording 2026-04-07 at 2 07 00 PM copy-4](https://github.com/user-attachments/assets/0c1ec816-9cba-48ef-a97c-c5be619dba1c)
-
-
-![Adobe Express - 88888-2](https://github.com/user-attachments/assets/f5422734-24a7-427e-a524-9c76ffe94c59)
-
-
-![Adobe Express - 0000-4](https://github.com/user-attachments/assets/0e1a0ddd-7b1b-4ff1-856a-f73c0ba299e8)
-
 
 ## CORS Setup (Required for Ollama)
 

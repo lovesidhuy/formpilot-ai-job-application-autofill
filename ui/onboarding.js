@@ -13,6 +13,19 @@ const setVal = (id, v) => { const el = $(id); if (el) el.value = v || ''; };
 const radioVal = name => document.querySelector(`input[name="${name}"]:checked`)?.value || '';
 const DEFAULT_OLLAMA_MODEL = 'phi3:mini';
 
+function inferEducationLevel(value) {
+  const text = String(value || '').trim().toLowerCase();
+  if (!text) return '';
+  if (/no diploma|no degree|none/.test(text)) return 'No diploma';
+  if (/doctor|phd|doctorate|juris doctor|md\b/.test(text)) return 'Doctorate';
+  if (/master|mba\b|m\.sc|ma\b/.test(text)) return "Master's degree";
+  if (/bachelor|b\.sc|bsc\b|b\.tech|ba\b|bs\b|undergraduate|university/.test(text)) return "Bachelor's degree";
+  if (/associate|dec|dcs/.test(text)) return 'Associate degree / DEC / DCS';
+  if (/certificate|diploma|trade|aec|dep/.test(text)) return 'Certificate / Diploma / Trade certificate';
+  if (/secondary|high school/.test(text)) return 'Secondary School';
+  return '';
+}
+
 function delay(ms) { return new Promise(r => setTimeout(r, ms)); }
 
 function toast(msg, type = 'ok', ms = 4000) {
@@ -74,38 +87,6 @@ function uniqueSkills(list) {
     out.push(skill);
   }
   return out.slice(0, 25);
-}
-
-function extractFirstJsonObject(raw) {
-  const text = String(raw || '');
-  let start = -1;
-  let depth = 0;
-  let inString = false;
-  let escaped = false;
-
-  for (let i = 0; i < text.length; i++) {
-    const ch = text[i];
-    if (inString) {
-      if (escaped) escaped = false;
-      else if (ch === '\\') escaped = true;
-      else if (ch === '"') inString = false;
-      continue;
-    }
-    if (ch === '"') {
-      inString = true;
-      continue;
-    }
-    if (ch === '{') {
-      if (depth === 0) start = i;
-      depth++;
-      continue;
-    }
-    if (ch === '}') {
-      if (depth > 0) depth--;
-      if (depth === 0 && start !== -1) return text.slice(start, i + 1);
-    }
-  }
-  return '';
 }
 
 function stripJsonComments(text) {
@@ -186,9 +167,7 @@ function stripTrailingJsonCommas(text) {
 }
 
 function normalizeJsonishText(raw) {
-  return String(raw || '')
-    .replace(/```json/gi, '')
-    .replace(/```/g, '')
+  return AiJson.stripMarkdownCodeFences(raw)
     .replace(/[“”]/g, '"')
     .replace(/[‘’]/g, "'")
     .trim();
@@ -330,7 +309,7 @@ function salvageResumeProfileFromText(raw) {
   const text = normalizeJsonishText(raw);
   const fieldNames = [
     'firstName', 'lastName', 'email', 'phone', 'linkedin', 'headline',
-    'summary', 'portfolio', 'github', 'education', 'fieldOfStudy',
+    'summary', 'portfolio', 'github', 'education', 'educationLevel', 'fieldOfStudy',
     'gradYear', 'experienceYears', 'city', 'province', 'country',
     'postal', 'address', 'salary',
   ];
@@ -355,11 +334,16 @@ function parseJsonObjectLenient(raw) {
   const cleaned = normalizeJsonishText(raw);
 
   try {
-    const jsonBlock = extractFirstJsonObject(cleaned);
-    if (!jsonBlock) throw new Error('No JSON found in response');
-    const normalized = stripTrailingJsonCommas(stripJsonComments(jsonBlock));
+    const { jsonText } = AiJson.parseJsonObject(cleaned);
+    const normalized = stripTrailingJsonCommas(stripJsonComments(jsonText));
     return JSON.parse(normalized);
   } catch (err) {
+    console.error('[QuickFill Onboarding] JSON parse failed for AI resume extraction response', {
+      rawResponse: err?.rawResponse || String(raw || ''),
+      cleanedResponse: err?.cleanedResponse || cleaned,
+      jsonText: err?.jsonText || '',
+      error: err?.message || String(err),
+    });
     const recovered = salvageResumeProfileFromText(cleaned);
     recovered._parseRecovered = true;
     recovered._parseError = err?.message || String(err);
@@ -540,7 +524,11 @@ async function extractProfileFromResume(resumeText) {
 
   // EXPANDED: now also extracts location + salary hint so screen 1 can be pre-filled
   const systemPrompt = `You are a resume parser. Extract structured data from the resume text and return ONLY a valid JSON object.
-Do not include any explanation, markdown code blocks, or text outside the JSON.
+Return JSON only.
+Do not use markdown.
+Do not wrap in triple backticks.
+Do not include explanation text.
+Do not include any text outside the JSON.
 
 Return exactly this structure:
 {
@@ -555,6 +543,7 @@ Return exactly this structure:
   "portfolio": "string — portfolio/website URL or empty string",
   "github": "string — GitHub URL or empty string",
   "education": "string — degree and institution, e.g. Bachelor of Science in Computer Science, MIT (2023)",
+  "educationLevel": "string — one of: Doctorate, Master's degree, Bachelor's degree, Associate degree / DEC / DCS, Certificate / Diploma / Trade certificate, Secondary School, No diploma",
   "fieldOfStudy": "string — field/major only, e.g. Computer Science",
   "gradYear": "string — graduation year only, e.g. 2023",
   "experienceYears": "string — numeric string like '4'",
@@ -586,7 +575,20 @@ Rules:
     });
   });
 
-  const parsed = parseJsonObjectLenient(raw);
+  console.log('[QuickFill Onboarding] Raw AI resume extraction response:', raw);
+
+  let parsed;
+  try {
+    parsed = parseJsonObjectLenient(raw);
+  } catch (error) {
+    console.error('[QuickFill Onboarding] Failed to parse AI resume extraction response', {
+      rawResponse: error?.rawResponse || raw,
+      cleanedResponse: error?.cleanedResponse || '',
+      jsonText: error?.jsonText || '',
+      error: error?.message || String(error),
+    });
+    throw error;
+  }
 
   return {
     _parseRecovered: !!parsed._parseRecovered,
@@ -602,6 +604,7 @@ Rules:
     portfolio:       String(parsed.portfolio       || '').trim(),
     github:          String(parsed.github          || '').trim(),
     education:       String(parsed.education       || '').trim(),
+    educationLevel:  String(parsed.educationLevel  || inferEducationLevel(parsed.education) || '').trim(),
     fieldOfStudy:    String(parsed.fieldOfStudy    || '').trim(),
     gradYear:        String(parsed.gradYear        || '').trim(),
     experienceYears: String(parsed.experienceYears || '').trim(),
@@ -676,6 +679,7 @@ function populateReviewForm(extracted) {
   if (extracted.portfolio)      setVal('ob2-portfolio', extracted.portfolio);
   if (extracted.github)         setVal('ob2-github', extracted.github);
   if (extracted.education)      setVal('ob2-education', extracted.education);
+  if (extracted.educationLevel) setVal('ob2-education-level', extracted.educationLevel);
   if (extracted.fieldOfStudy)   setVal('ob2-field-of-study', extracted.fieldOfStudy);
   if (extracted.gradYear)       setVal('ob2-grad-year', extracted.gradYear);
 
@@ -697,6 +701,7 @@ function collectReviewForm() {
     portfolio:    val('ob2-portfolio'),
     github:       val('ob2-github'),
     education:    val('ob2-education'),
+    educationLevel: val('ob2-education-level') || inferEducationLevel(val('ob2-education')),
     fieldOfStudy: val('ob2-field-of-study'),
     gradYear:     val('ob2-grad-year'),
     skills:       uniqueSkills(_skills),
@@ -779,6 +784,7 @@ function saveFullProfile(reviewed, required, extractedExperience) {
 
       // Education
       education:     reviewed.education,
+      educationLevel: reviewed.educationLevel,
       fieldOfStudy:  reviewed.fieldOfStudy,
       gradYear:      reviewed.gradYear,
 
@@ -818,7 +824,7 @@ function prefillFromStorage() {
     'workAuth', 'sponsorship', 'pref_remote', 'pref_relocate',
     'firstName', 'lastName', 'email', 'phone', 'linkedin',
     'headline', 'summary', 'skills', 'portfolio', 'github',
-    'education', 'fieldOfStudy', 'gradYear',
+    'education', 'educationLevel', 'fieldOfStudy', 'gradYear',
     'experience',
   ];
 
@@ -856,6 +862,7 @@ function prefillFromStorage() {
     if (data.portfolio)    setVal('ob2-portfolio', data.portfolio);
     if (data.github)       setVal('ob2-github', data.github);
     if (data.education)    setVal('ob2-education', data.education);
+    if (data.educationLevel) setVal('ob2-education-level', data.educationLevel);
     if (data.fieldOfStudy) setVal('ob2-field-of-study', data.fieldOfStudy);
     if (data.gradYear)     setVal('ob2-grad-year', data.gradYear);
     _skills = uniqueSkills(parseSkillsLocal(data.skills));
@@ -1029,7 +1036,7 @@ $('btn-skip-ai')?.addEventListener('click', () => {
     [
       'firstName', 'lastName', 'email', 'phone', 'linkedin',
       'headline', 'summary', 'skills', 'portfolio', 'github',
-      'education', 'fieldOfStudy', 'gradYear'
+      'education', 'educationLevel', 'fieldOfStudy', 'gradYear'
     ],
     data => {
       _extractedData = {
@@ -1044,6 +1051,7 @@ $('btn-skip-ai')?.addEventListener('click', () => {
         portfolio:    data.portfolio    || '',
         github:       data.github       || '',
         education:    data.education    || '',
+        educationLevel: data.educationLevel || '',
         fieldOfStudy: data.fieldOfStudy || '',
         gradYear:     data.gradYear     || '',
         city:         '', province: '', country: '',

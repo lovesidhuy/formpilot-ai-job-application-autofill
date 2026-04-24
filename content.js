@@ -14,23 +14,84 @@ if (window.__qfLoaded) {
 } else {
 window.__qfLoaded = true;
 
-// ─── SmartApply step URL patterns ─────────────────────────────────────────
-
-const SA = {
-  DOMAIN:      'smartapply.indeed.com',
-  CONTACT:     'contact-info',
-  LOCATION:    'profile-location',
-  RESUME:      'resume',
-  PRIVACY:     'privacy',
-  EXPERIENCE:  'experience',
-  REVIEW:      'review',
-  QUAL:        'qualification-questions-module',
-  EMP_Q:       'questions-module',
-  RESUME_SEL:  'resume-selection-module',
-  APPLY_BY_ID: 'applybyapplyablejobid',
-};
-
-const PAGE_TYPES = {
+const sleep = typeof globalThis.sleep === 'function'
+  ? globalThis.sleep
+  : (ms => new Promise(resolve => setTimeout(resolve, ms)));
+const getPageText = typeof globalThis.getPageText === 'function'
+  ? globalThis.getPageText
+  : (() => (document.body?.innerText || '').replace(/\s+/g, ' ').trim().toLowerCase());
+const isVisible = typeof globalThis.isVisible === 'function'
+  ? globalThis.isVisible
+  : (el => {
+      if (!el || el.disabled || el.readOnly) return false;
+      const style = window.getComputedStyle(el);
+      const rect = el.getBoundingClientRect();
+      return style.display !== 'none' && style.visibility !== 'hidden' && style.opacity !== '0' && rect.width > 0 && rect.height > 0;
+    });
+const getBtnText = typeof globalThis.getBtnText === 'function'
+  ? globalThis.getBtnText
+  : (btn => ((btn?.innerText || btn?.textContent || btn?.value || btn?.getAttribute?.('aria-label') || '').trim().toLowerCase()));
+const getVisibleButtons = typeof globalThis.getVisibleButtons === 'function'
+  ? globalThis.getVisibleButtons
+  : (() => Array.from(document.querySelectorAll('button, input[type="button"], input[type="submit"]')).filter(el => isVisible(el)));
+const isSubmitButton = typeof globalThis.isSubmitButton === 'function'
+  ? globalThis.isSubmitButton
+  : (btn => {
+      if (btn?.dataset?.testid === 'submit-application-button') return true;
+      const text = getBtnText(btn);
+      return text.includes('submit your application') || text === 'submit' || text.includes('submit application');
+    });
+const isContinueButton = typeof globalThis.isContinueButton === 'function'
+  ? globalThis.isContinueButton
+  : (btn => {
+      const testId = btn?.dataset?.testid || '';
+      if (testId === 'continue-button' || /^hp-continue-button/.test(testId)) return true;
+      const text = getBtnText(btn);
+      return text === 'continue' || text === 'next' || text.includes('continue') || text.includes('next') || text.includes('apply anyway') || text.includes('continue applying') || text.includes('review application') || text === 'review';
+    });
+const findSubmitButton = typeof globalThis.findSubmitButton === 'function'
+  ? globalThis.findSubmitButton
+  : (() => {
+      const smartApplyButton = document.querySelector("button[data-testid='submit-application-button']");
+      if (smartApplyButton && isVisible(smartApplyButton)) return smartApplyButton;
+      return getVisibleButtons().find(isSubmitButton) || null;
+    });
+const findContinueButton = typeof globalThis.findContinueButton === 'function'
+  ? globalThis.findContinueButton
+  : (() => {
+      for (const selector of [
+        "button[data-testid='continue-button']",
+        "button[data-testid*='hp-continue-button']",
+        "div[data-testid='resume-selection-footer'] button",
+      ]) {
+        const el = document.querySelector(selector);
+        if (el && isVisible(el)) return el;
+      }
+      return getVisibleButtons().find(btn => !isSubmitButton(btn) && isContinueButton(btn)) || null;
+    });
+const findAnyNavigationButton = typeof globalThis.findAnyNavigationButton === 'function'
+  ? globalThis.findAnyNavigationButton
+  : (() => null);
+const findAnyNavigationButtonWithRetry = typeof globalThis.findAnyNavigationButtonWithRetry === 'function'
+  ? globalThis.findAnyNavigationButtonWithRetry
+  : (async () => findContinueButton() || findAnyNavigationButton());
+const findApplyAnywayButton = typeof globalThis.findApplyAnywayButton === 'function'
+  ? globalThis.findApplyAnywayButton
+  : (() => getVisibleButtons().find(btn => getBtnText(btn).includes('apply anyway')) || null);
+const clickElement = typeof globalThis.clickElement === 'function'
+  ? globalThis.clickElement
+  : (el => {
+      if (!el) return false;
+      try { el.click(); return true; } catch (_) {}
+      return false;
+    });
+const waitForDomChange = typeof globalThis.waitForDomChange === 'function'
+  ? globalThis.waitForDomChange
+  : (() => Promise.resolve(false));
+const safeNavigate = typeof globalThis.safeNavigate === 'function'
+  ? globalThis.safeNavigate
+  : (async btn => clickElement(btn));
+const PAGE_TYPES = globalThis.PAGE_TYPES || {
   RESUME_SELECTION: 'RESUME_SELECTION',
   QUESTION_PAGE: 'QUESTION_PAGE',
   REQUIREMENT_WARNING: 'REQUIREMENT_WARNING',
@@ -40,43 +101,42 @@ const PAGE_TYPES = {
   CAPTCHA_OR_BLOCKED: 'CAPTCHA_OR_BLOCKED',
   UNKNOWN_PAGE: 'UNKNOWN_PAGE',
 };
-
-const FLOW_STATES = {
-  SCAN_PAGE: 'SCAN_PAGE',
-  CLASSIFY_PAGE: 'CLASSIFY_PAGE',
-  BUILD_FIELD_MODELS: 'BUILD_FIELD_MODELS',
-  ANSWER_FIELDS: 'ANSWER_FIELDS',
-  APPLY_FIELDS: 'APPLY_FIELDS',
-  VERIFY_FIELDS: 'VERIFY_FIELDS',
-  CHECK_ERRORS: 'CHECK_ERRORS',
-  NAVIGATE: 'NAVIGATE',
-  WAIT_FOR_PAGE_CHANGE: 'WAIT_FOR_PAGE_CHANGE',
-  DONE: 'DONE',
-  BLOCKED: 'BLOCKED',
-};
-
-function isSmartApplyPage() {
-  return location.hostname.includes(SA.DOMAIN);
-}
-
-function getSmartApplyStep() {
-  const url = location.href.toLowerCase();
-  if (url.includes(SA.RESUME_SEL))  return 'resume-selection';
-  if (url.includes(SA.QUAL))        return 'qual-questions';
-  if (url.includes(SA.EMP_Q))       return 'emp-questions';
-  if (url.includes(SA.CONTACT))     return 'contact-info';
-  if (url.includes(SA.LOCATION))    return 'location';
-  if (url.includes(SA.REVIEW))      return 'review';
-  if (url.includes(SA.PRIVACY))     return 'privacy';
-  if (url.includes(SA.EXPERIENCE))  return 'experience';
-  if (url.includes(SA.RESUME))      return 'resume';
-  if (url.includes(SA.APPLY_BY_ID)) return 'redirect';
-  return 'unknown';
-}
+const FLOW_STATES = globalThis.FLOW_STATES || {};
+const isSmartApplyPage = typeof globalThis.isSmartApplyPage === 'function'
+  ? globalThis.isSmartApplyPage
+  : (() => getCurrentStep().platform === 'smartapply');
+const getSmartApplyStep = typeof globalThis.getSmartApplyStep === 'function'
+  ? globalThis.getSmartApplyStep
+  : (() => 'unknown');
+const isIndeedPage = typeof globalThis.isIndeedPage === 'function'
+  ? globalThis.isIndeedPage
+  : (() => /indeed\.com/i.test(location.hostname));
+const shouldSkipCurrentPage = typeof globalThis.shouldSkipCurrentPage === 'function'
+  ? globalThis.shouldSkipCurrentPage
+  : (() => false);
+const isEmployerRequirementsWarningPage = typeof globalThis.isEmployerRequirementsWarningPage === 'function'
+  ? globalThis.isEmployerRequirementsWarningPage
+  : (() => false);
+const isReasonForApplyingPage = typeof globalThis.isReasonForApplyingPage === 'function'
+  ? globalThis.isReasonForApplyingPage
+  : (() => false);
+const isCaptchaOrBlockedPage = typeof globalThis.isCaptchaOrBlockedPage === 'function'
+  ? globalThis.isCaptchaOrBlockedPage
+  : (() => false);
+const isResumeSelectionPage = typeof globalThis.isResumeSelectionPage === 'function'
+  ? globalThis.isResumeSelectionPage
+  : (() => false);
+const isReviewPage = typeof globalThis.isReviewPage === 'function'
+  ? globalThis.isReviewPage
+  : (() => false);
+const getVisibleQuestionControlCount = typeof globalThis.getVisibleQuestionControlCount === 'function'
+  ? globalThis.getVisibleQuestionControlCount
+  : (() => 0);
+const classifyCurrentPage = typeof globalThis.classifyCurrentPage === 'function'
+  ? globalThis.classifyCurrentPage
+  : (() => ({ type: PAGE_TYPES.UNKNOWN_PAGE, step: getCurrentStep().step, reason: 'fallback' }));
 
 // ─── Helpers ───────────────────────────────────────────────────────────────
-
-function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
 function normalizeText(s) {
   return String(s || '')
@@ -84,23 +144,6 @@ function normalizeText(s) {
     .replace(/[^\w\s/+.-]/g, '')
     .trim()
     .toLowerCase();
-}
-
-function getPageText() {
-  return (document.body?.innerText || '').replace(/\s+/g, ' ').trim().toLowerCase();
-}
-
-function isVisible(el) {
-  if (!el || el.disabled || el.readOnly) return false;
-  const s = window.getComputedStyle(el);
-  const rect = el.getBoundingClientRect();
-  return (
-    s.display    !== 'none'   &&
-    s.visibility !== 'hidden' &&
-    s.opacity    !== '0'      &&
-    rect.width  > 0           &&
-    rect.height > 0
-  );
 }
 
 // ─── Unique ID system ──────────────────────────────────────────────────────
@@ -559,37 +602,19 @@ function _cacheJobOpportunistically() {
     const jk = location.href.match(/[?&]jk=([a-zA-Z0-9]+)/);
     const jobId = jk ? jk[1] : location.hostname + location.pathname;
     const { title, company, desc } = _scrapeJobInfo();
-    chrome.storage.session.get(['qf_cachedJob'], (data) => {
+    chrome.storage.local.get(['qf_cachedJob'], (data) => {
+      void chrome.runtime.lastError;
       const existing = data.qf_cachedJob || {};
       const isSame = existing.jobId === jobId;
-      chrome.storage.session.set({ qf_cachedJob: {
+      chrome.storage.local.set({ qf_cachedJob: {
         jobId,
         title:   title   || (isSame ? existing.title   : ''),
         company: company || (isSame ? existing.company : ''),
         desc:    desc    || (isSame ? existing.desc    : ''),
         ts: Date.now(),
-      }});
+      }}, () => void chrome.runtime.lastError);
     });
   } catch (_) {}
-}
-
-function _readCachedJobDescription() {
-  return new Promise(resolve => {
-    const timer = setTimeout(() => resolve(''), 1500);
-    try {
-      chrome.storage.session.get(['qf_cachedJob'], (data) => {
-        clearTimeout(timer);
-        const job = data?.qf_cachedJob;
-        if (!job) { resolve(''); return; }
-        const parts = [
-          job.title   ? `Job Title: ${job.title}`   : '',
-          job.company ? `Company: ${job.company}`   : '',
-          job.desc    ? `Job Description:\n${job.desc}` : '',
-        ].filter(Boolean);
-        resolve(parts.join('\n\n'));
-      });
-    } catch (_) { clearTimeout(timer); resolve(''); }
-  });
 }
 
 // Cache on every page load (guarded inside the function)
@@ -597,209 +622,7 @@ _cacheJobOpportunistically();
 
 // ─── Indeed page-type detectors ────────────────────────────────────────────
 
-function isIndeedPage() {
-  return /indeed\.com/i.test(location.hostname);
-}
-
-function shouldSkipCurrentPage(text) {
-  return (
-    text.includes('enter a job that shows relevant experience') ||
-    text.includes('we share one job title with the employer to introduce you as a candidate')
-  );
-}
-
-function isEmployerRequirementsWarningPage(text) {
-  return (
-    text.includes("it looks like you don't meet these employer requirements") ||
-    text.includes('you may not hear back from the employer based on your responses to their questions') ||
-    text.includes('you may not hear back from the employer based on your responses')
-  );
-}
-
-function isReasonForApplyingPage(text) {
-  return (
-    text.includes("help indeed better understand why you're applying") ||
-    text.includes('reason for applying')
-  );
-}
-
-function isCaptchaOrBlockedPage(text) {
-  const bodyText = String(text || '').toLowerCase();
-  const hasCaptchaWidget = !!document.querySelector(
-    'iframe[src*="captcha"], iframe[src*="recaptcha"], .g-recaptcha, .h-captcha, [data-sitekey], textarea[name="g-recaptcha-response"], textarea[name="h-captcha-response"]'
-  );
-  const hasExplicitBlockText = /verify you are human|security check|access denied|temporarily blocked|unusual traffic|complete the captcha|solve the captcha/i.test(bodyText);
-  const hasOnlyLegalNotice = /protected by recaptcha|google.?s privacy policy|terms of service apply/i.test(bodyText) && !hasExplicitBlockText;
-  return (hasCaptchaWidget && !hasOnlyLegalNotice) || hasExplicitBlockText;
-}
-
-function isResumeSelectionPage(text) {
-  return getSmartApplyStep() === 'resume-selection' ||
-    /add a resume for the employer|resume selection|choose a resume|select a resume|upload a resume|existing resume/i.test(text || '');
-}
-
-function isReviewPage(text) {
-  return getSmartApplyStep() === 'review' ||
-    /please review your application|review your application|application review|before submitting|submit your application/i.test(text || '') ||
-    !!findSubmitButton();
-}
-
-function getVisibleQuestionControlCount() {
-  const selectors = [
-    'input:not([type="hidden"]):not([type="button"]):not([type="submit"])',
-    'textarea',
-    'select',
-    '[role="radiogroup"]',
-    '[role="combobox"]',
-  ];
-  return selectors.reduce((count, sel) => count + Array.from(document.querySelectorAll(sel)).filter(isVisible).length, 0);
-}
-
-function classifyCurrentPage(pageText = getPageText()) {
-  const text = String(pageText || '').toLowerCase();
-  const step = getSmartApplyStep();
-
-  if (isCaptchaOrBlockedPage(text)) {
-    return { type: PAGE_TYPES.CAPTCHA_OR_BLOCKED, step, reason: 'captcha_or_blocked' };
-  }
-  if (isEmployerRequirementsWarningPage(text)) {
-    return { type: PAGE_TYPES.REQUIREMENT_WARNING, step, reason: 'requirements_warning' };
-  }
-  if (isReasonForApplyingPage(text)) {
-    return { type: PAGE_TYPES.WHY_APPLYING, step, reason: 'why_applying' };
-  }
-  if (shouldSkipCurrentPage(text)) {
-    return { type: PAGE_TYPES.RELEVANT_EXPERIENCE_JOB, step, reason: 'relevant_experience_job' };
-  }
-  if (isResumeSelectionPage(text)) {
-    return { type: PAGE_TYPES.RESUME_SELECTION, step, reason: 'resume_selection' };
-  }
-  if (isReviewPage(text)) {
-    return { type: PAGE_TYPES.REVIEW_PAGE, step, reason: 'review' };
-  }
-  if (
-    step === 'qual-questions' ||
-    step === 'emp-questions' ||
-    step === 'contact-info' ||
-    step === 'location' ||
-    step === 'experience' ||
-    getVisibleQuestionControlCount() > 0
-  ) {
-    return { type: PAGE_TYPES.QUESTION_PAGE, step, reason: 'question_controls' };
-  }
-  return { type: PAGE_TYPES.UNKNOWN_PAGE, step, reason: 'unclassified' };
-}
-
 // ─── Button detection ──────────────────────────────────────────────────────
-
-function getBtnText(btn) {
-  return (
-    (btn.innerText || btn.textContent || btn.value || btn.getAttribute('aria-label') || '')
-      .trim().toLowerCase()
-  );
-}
-
-function getVisibleButtons() {
-  return Array.from(
-    document.querySelectorAll('button, input[type="button"], input[type="submit"]')
-  ).filter(el => isVisible(el));
-}
-
-function isSubmitButton(btn) {
-  if (btn.dataset?.testid === 'submit-application-button') return true;
-  const txt = getBtnText(btn);
-  return (
-    txt.includes('submit your application') ||
-    txt === 'submit'                         ||
-    txt.includes('submit application')
-  );
-}
-
-function isContinueButton(btn) {
-  const dt = btn.dataset?.testid || '';
-  if (dt === 'continue-button' || /^hp-continue-button/.test(dt)) return true;
-  const txt = getBtnText(btn);
-  return (
-    txt === 'continue'                   ||
-    txt === 'next'                       ||
-    txt.includes('continue')            ||
-    txt.includes('next')                ||
-    txt.includes('apply anyway')        ||
-    txt.includes('continue applying')   ||
-    txt.includes('review application')  ||
-    txt === 'review'
-  );
-}
-
-function findSubmitButton() {
-  const sa = document.querySelector("button[data-testid='submit-application-button']");
-  if (sa && isVisible(sa)) return sa;
-  return getVisibleButtons().find(isSubmitButton) || null;
-}
-
-function findContinueButton() {
-  for (const sel of [
-    "button[data-testid='continue-button']",
-    "button[data-testid*='hp-continue-button']",
-    "div[data-testid='resume-selection-footer'] button",
-  ]) {
-    const el = document.querySelector(sel);
-    if (el && isVisible(el)) return el;
-  }
-  const buttons = getVisibleButtons();
-  for (const btn of buttons) {
-    if (isSubmitButton(btn)) continue;
-    if (isContinueButton(btn)) return btn;
-  }
-  return null;
-}
-
-function findAnyNavigationButton() {
-  const NAV_RE  = /\b(continue|next|proceed|apply|forward|review|submit|go)\b/;
-  const SKIP_RE = /\b(back|previous|cancel|close|sign\s*in|log\s*in|save\s*draft|delete|remove)\b/;
-  const candidates = Array.from(document.querySelectorAll(
-    'button, input[type="button"], input[type="submit"], [role="button"], a[role="button"]'
-  ));
-  for (const btn of candidates) {
-    const s = window.getComputedStyle(btn);
-    if (s.display === 'none' || s.visibility === 'hidden') continue;
-    if (btn.disabled) continue;
-    const txt = getBtnText(btn);
-    if (!txt) continue;
-    if (SKIP_RE.test(txt)) continue;
-    if (NAV_RE.test(txt)) return btn;
-  }
-  return null;
-}
-
-async function findAnyNavigationButtonWithRetry(timeout = 800, interval = 250) {
-  const deadline = Date.now() + timeout;
-  while (Date.now() < deadline) {
-    const btn = findContinueButton() || findAnyNavigationButton();
-    if (btn) return btn;
-    await sleep(interval);
-  }
-  return null;
-}
-
-function findApplyAnywayButton() {
-  return getVisibleButtons().find(btn => getBtnText(btn).includes('apply anyway')) || null;
-}
-
-// ─── DOM interaction helpers ───────────────────────────────────────────────
-
-function clickElement(el) {
-  if (!el) return false;
-  try { el.scrollIntoView({ block: 'center', behavior: 'instant' }); } catch (_) {}
-  try { el.click(); return true; } catch (_) {}
-  try {
-    el.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }));
-    el.dispatchEvent(new MouseEvent('mouseup',   { bubbles: true, cancelable: true }));
-    el.dispatchEvent(new MouseEvent('click',     { bubbles: true, cancelable: true }));
-    return true;
-  } catch (_) {}
-  return false;
-}
 
 function fireKeyboardOpen(el) {
   try {
@@ -810,45 +633,7 @@ function fireKeyboardOpen(el) {
   } catch (_) { return false; }
 }
 
-function waitForDomChange(previousSnapshot, timeout = 2500) {
-  return new Promise(resolve => {
-    let settled = false;
-    const finish = result => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      observer.disconnect();
-      resolve(result);
-    };
-    const timer = setTimeout(() => finish(false), timeout);
-    const observer = new MutationObserver(() => {
-      const now = (document.body?.innerText || '').slice(0, 2000).replace(/\s+/g, ' ').toLowerCase();
-      if (now !== previousSnapshot) finish(true);
-    });
-    observer.observe(document.body, { childList: true, subtree: true, characterData: true });
-  });
-}
-
-async function safeNavigate(btn, beforeSnapshot) {
-  if (!btn) return false;
-  clickElement(btn);
-  await sleep(250);
-  await waitForDomChange(beforeSnapshot, 1800);
-  await sleep(100);
-  return true;
-}
-
 // ─── Combobox helpers ──────────────────────────────────────────────────────
-
-function getOptionText(el) {
-  return (
-    el.getAttribute('aria-label') ||
-    el.getAttribute('data-testid') ||
-    el.innerText ||
-    el.textContent ||
-    ''
-  ).replace(/\s+/g, ' ').trim();
-}
 
 function getComboboxOptions() {
   const combined =
@@ -904,6 +689,18 @@ function describeAnswerForLog(answer) {
   }
 }
 
+function normalizeResumeOptionText(value) {
+  const text = String(value || '')
+    .replace(/\s+/g, ' ')
+    .replace(/\buploaded\b.*$/i, '')
+    .replace(/\bupdated\b.*$/i, '')
+    .trim();
+
+  const fileMatch = text.match(/\b[\w.\- ]+\.(pdf|doc|docx|rtf|txt)\b/i);
+  if (fileMatch) return normalizeText(fileMatch[0]);
+  return normalizeText(text);
+}
+
 async function chooseComboboxOption(comboEl, answer) {
   if (!comboEl || !answer) return false;
   clickElement(comboEl);
@@ -919,25 +716,6 @@ async function chooseComboboxOption(comboEl, answer) {
   return false;
 }
 
-function getRadioLikeOptions(container) {
-  if (!container) return [];
-  return Array.from(container.querySelectorAll(
-    'input[type="radio"], [role="radio"], button, label, [data-testid*="radio"], ' +
-    '[class*="radio"], [class*="Radio"], [class*="option"], [class*="Option"], ' +
-    '[class*="card"], [class*="Card"]'
-  )).filter(isVisible).map(el => {
-    let text = '';
-    if (el.matches('input[type="radio"]')) {
-      const rid = el.id;
-      const lbl = rid ? document.querySelector(`label[for="${CSS.escape(rid)}"]`) : null;
-      text = (lbl ? lbl.innerText : el.value || '').trim();
-    } else {
-      text = getOptionText(el);
-    }
-    return { el, text };
-  }).filter(x => x.text && x.text.length < 200);
-}
-
 function findCustomRadioGroupByName(name) {
   const exact = document.querySelector(`[role="radiogroup"][data-qf-name="${CSS.escape(name)}"]`);
   if (exact) return exact;
@@ -947,8 +725,6 @@ function findCustomRadioGroupByName(name) {
 }
 
 // ─── Field capture primitives ──────────────────────────────────────────────
-
-const isElement = (n) => n instanceof Element;
 
 const clean = (v) => (v || '').replace(/\s+/g, ' ').trim();
 
@@ -1160,13 +936,6 @@ const isLikelySingleChoiceCheckboxGroup = (question, options) => {
 
 // ── field filtering ───────────────────────────────────────────────────────
 
-const isFakeCombo = (el) => {
-  if (!isElement(el)) return false;
-  const role = (el.getAttribute('role') || '').toLowerCase();
-  const hasPopup = (el.getAttribute('aria-haspopup') || '').toLowerCase();
-  return role === 'combobox' || hasPopup === 'listbox';
-};
-
 function isRealQuestionField(el) {
   if (!isElement(el) || !isVisible(el)) return false;
   if (el.disabled || el.readOnly) return false;
@@ -1286,11 +1055,19 @@ function collectCheckboxGroup(el) {
 }
 
 function collectNativeSelect(el) {
-  const question  = buildFallbackQuestionLabel(el, findLabel(el), el.name || el.id || '');
   const container = getQuestionContainer(el);
   const options = Array.from(el.options)
     .map((o, idx) => ({ index: idx, label: clean(o.textContent), value: o.value, selected: o.selected }))
     .filter(o => o.label || o.value);
+  const optionLabels = options.map(o => clean(o.label || o.value || ''));
+  const looksLikeCountrySelect =
+    optionLabels.length >= 20 &&
+    optionLabels.some(label => /^canada$/i.test(label)) &&
+    optionLabels.some(label => /^united states$/i.test(label)) &&
+    optionLabels.some(label => /^afghanistan$/i.test(label));
+  const question = looksLikeCountrySelect
+    ? 'Country'
+    : buildFallbackQuestionLabel(el, findLabel(el), el.name || el.id || '');
   return {
     question, type: 'select', tag: 'select',
     required: isRequired(el, question),
@@ -1304,7 +1081,6 @@ function collectNativeSelect(el) {
 }
 
 function collectFakeCombobox(el) {
-  const question  = buildFallbackQuestionLabel(el, findLabel(el), el.getAttribute('name') || el.id || '');
   const container = getQuestionContainer(el);
   const options = Array.from(container.querySelectorAll('[role="option"], option'))
     .map((n, idx) => ({
@@ -1313,6 +1089,15 @@ function collectFakeCombobox(el) {
       value:    n.getAttribute('data-value') || n.getAttribute('value') || clean(n.innerText || n.textContent || ''),
       selected: n.getAttribute('aria-selected') === 'true',
     })).filter(o => o.label || o.value);
+  const optionLabels = options.map(o => clean(o.label || o.value || ''));
+  const looksLikeCountrySelect =
+    optionLabels.length >= 20 &&
+    optionLabels.some(label => /^canada$/i.test(label)) &&
+    optionLabels.some(label => /^united states$/i.test(label)) &&
+    optionLabels.some(label => /^afghanistan$/i.test(label));
+  const question = looksLikeCountrySelect
+    ? 'Country'
+    : buildFallbackQuestionLabel(el, findLabel(el), el.getAttribute('name') || el.id || '');
   return {
     question, type: 'select', tag: el.tagName.toLowerCase(),
     required: isRequired(el, question),
@@ -1330,6 +1115,8 @@ function looksNumericField(el, question) {
   const type = (el.getAttribute('type') || '').toLowerCase();
   const min = el.getAttribute('min'), max = el.getAttribute('max'), step = el.getAttribute('step');
   if (tag === 'textarea') return false;
+  if (type === 'tel') return false;
+  if (/\b(phone|mobile|cell|telephone)\b/i.test(question || '')) return false;
   if (type === 'number') return true;
   if (/how many|years of|experience|amount|salary/i.test(question || '')) return true;
   if ((min && !Number.isNaN(Number(min))) || (max && !Number.isNaN(Number(max)))) return true;
@@ -1513,104 +1300,6 @@ function harvestAriaRadioGroups(seenEls) {
   return fields;
 }
 
-// ── Main field collector ────────────────────────────────────────────────────
-
-function collectFields(pageType = classifyCurrentPage().type) {
-  autoClickConsentCheckboxes();
-
-  const nodes = Array.from(document.querySelectorAll(
-    'input, textarea, select, [role="combobox"], [aria-haspopup="listbox"]'
-  )).filter(isRealQuestionField);
-
-  const seen   = new Set();
-  const fields = [];
-
-  for (const el of nodes) {
-    const type = (el.getAttribute('type') || '').toLowerCase();
-    const name = el.getAttribute('name') || '';
-    let field  = null;
-
-    if (type === 'radio') {
-      const key = `radio:${name || cssPath(el)}`;
-      if (seen.has(key)) continue;
-      field = collectRadioGroup(el);
-      if (field) seen.add(key);
-    } else if (type === 'checkbox') {
-      const key = `checkbox:${name || cssPath(el)}`;
-      if (seen.has(key)) continue;
-      field = collectCheckboxGroup(el);
-      if (field) seen.add(key);
-    } else {
-      const key = `${el.tagName.toLowerCase()}:${el.id || name || cssPath(el)}`;
-      if (!key || seen.has(key)) continue;
-      field = collectSingleField(el);
-      if (field) seen.add(key);
-    }
-
-    if (field) fields.push(field);
-  }
-
-  // ── Indeed-specific supplement ──────────────────────────────────────────
-  if (isIndeedPage() || isSmartApplyPage()) {
-    const seenEls = new Set(nodes);
-
-    const seenNames = new Set(
-      fields.flatMap(f => {
-        const n = f.targets?.[0]?.name || f.dom?.name || f.name || '';
-        return n ? [n] : [];
-      })
-    );
-
-    const namedRadios = harvestIndeedNamedRadioGroups(seenEls);
-    for (const nf of namedRadios) {
-      if (!seenNames.has(nf.name)) { fields.push(nf); seenNames.add(nf.name); }
-    }
-
-    const namedCheckboxGroups = harvestIndeedNamedCheckboxGroups(seenEls);
-    for (const cf of namedCheckboxGroups) {
-      if (!seenNames.has(cf.name)) { fields.push(cf); seenNames.add(cf.name); }
-    }
-
-    const containerFields = harvestIndeedContainerFields(seenEls);
-    for (const cf of containerFields) {
-      if (!seenNames.has(cf.name)) fields.push(cf);
-    }
-  }
-
-  // ── ARIA radiogroup supplement (platform-agnostic) ──────────────────────
-  {
-    const richSeenEls = new Set();
-    for (const f of fields) {
-      if (f.targets) {
-        for (const t of f.targets) {
-          if (t.selector) {
-            try {
-              const el = document.querySelector(t.selector);
-              if (el) richSeenEls.add(el);
-            } catch (_) {}
-          }
-        }
-      }
-    }
-
-    const ariaGroups = harvestAriaRadioGroups(richSeenEls);
-
-    const seenQuestions = new Set(
-      fields.map(f => (f.question || f.label || '').toLowerCase().trim())
-    );
-
-    for (const ag of ariaGroups) {
-      const q = (ag.question || '').toLowerCase().trim();
-      if (!seenQuestions.has(q)) {
-        fields.push(ag);
-        seenQuestions.add(q);
-      }
-    }
-  }
-
-  return attachOtherFollowups(fields).map(field => enrichCanonicalFieldModel(field, pageType));
-}
-
 function inferAllowedAnswerShape(field) {
   if (field.type === 'radio' || field.type === 'select' || field.tag === 'aria-radio') return 'exact_option';
   if (field.type === 'checkbox_group' || field.type === 'consent_checkbox_group') return 'option_array';
@@ -1620,10 +1309,12 @@ function inferAllowedAnswerShape(field) {
   return 'unknown';
 }
 
-function enrichCanonicalFieldModel(field, pageType = PAGE_TYPES.UNKNOWN_PAGE) {
+function enrichCanonicalFieldModel(field, pageType = PAGE_TYPES.UNKNOWN_PAGE, registry = null) {
   const firstTarget = field.targets?.[0] || {};
+  const resolvedEl = resolveElement(firstTarget);
   const containerId = field.dom?.containerSelector || firstTarget.selector || '';
-  const questionText = clean(field.question || field.label || '');
+  const registryEntry = registry?.get(field.id) || null;
+  const resolvedQuestionText = clean(registryEntry?.questionText || field.question || field.label || '');
   const helpText = clean(field.validationMessage || '');
   const currentValue = Array.isArray(field.answer) ? field.answer.slice() : (field.answer || field.currentValue || '');
   const visible = (field.targets || []).some(resolveElement) || field.dom?.visible !== false;
@@ -1631,10 +1322,12 @@ function enrichCanonicalFieldModel(field, pageType = PAGE_TYPES.UNKNOWN_PAGE) {
   const hasError = !!helpText || collectVisibleErrorUi(field).length > 0;
   return {
     ...field,
-    id: field.id || uniqueId(resolveElement(firstTarget) || document.body),
+    id: field.id || uniqueId(resolvedEl || document.body),
     containerId,
     pageType,
-    questionText,
+    question: resolvedQuestionText || field.question || '',
+    label: resolvedQuestionText || field.label || '',
+    questionText: resolvedQuestionText,
     helpText,
     currentValue,
     visible,
@@ -1643,7 +1336,8 @@ function enrichCanonicalFieldModel(field, pageType = PAGE_TYPES.UNKNOWN_PAGE) {
     hasError,
     dependency: field.dependency || null,
     allowedAnswerShape: inferAllowedAnswerShape(field),
-    confidence: questionText && !isGenericQuestionText(questionText) ? 0.9 : 0.45,
+    _questionLogLine: registry?.logEntry(field.id) || '',
+    confidence: resolvedQuestionText && !isGenericQuestionText(resolvedQuestionText) ? 0.95 : 0.45,
   };
 }
 
@@ -1674,6 +1368,8 @@ function findExMatchingOption(field, answer) {
   const raw        = getAnswerText(answer);
   const normalized = raw.toLowerCase();
   if (!normalized) return null;
+  const answerWords = normalized.split(/\W+/).filter(Boolean);
+  const answerResumeText = normalizeResumeOptionText(raw);
 
   const normalizeOptionForMatch = (value) => {
     const text = String(value || '')
@@ -1709,19 +1405,42 @@ function findExMatchingOption(field, answer) {
   const normExact  = opts.find(o => normalizeOptionForMatch(String(o.label || '')) === normAnswer);
   if (normExact) return normExact;
 
+  if (answerResumeText) {
+    const resumeExact = opts.find(o => {
+      const optionLabel = String(o.label || o.value || '').trim();
+      return normalizeResumeOptionText(optionLabel) === answerResumeText;
+    });
+    if (resumeExact) return resumeExact;
+  }
+
+  // 2b. Prevent long prose from loosely matching short structured options.
+  const looksLikeFreeformAnswer = answerWords.length >= 5;
+
   // 3. Partial substring match (either direction)
-  const partial = opts.find(o => {
+  const partial = looksLikeFreeformAnswer ? null : opts.find(o => {
     const l = String(o.label || '').trim().toLowerCase();
     return l.includes(normalized) || normalized.includes(l);
   });
   if (partial) return partial;
 
   // 4. Normalized partial match
-  const normPartial = opts.find(o => {
+  const normPartial = looksLikeFreeformAnswer ? null : opts.find(o => {
     const l = normalizeOptionForMatch(String(o.label || ''));
     return l.includes(normAnswer) || normAnswer.includes(l);
   });
   if (normPartial) return normPartial;
+
+  if (answerResumeText) {
+    const resumePartial = opts.find(o => {
+      const optionLabel = String(o.label || o.value || '').trim();
+      const normalizedOption = normalizeResumeOptionText(optionLabel);
+      return normalizedOption && (
+        normalizedOption.includes(answerResumeText) ||
+        answerResumeText.includes(normalizedOption)
+      );
+    });
+    if (resumePartial) return resumePartial;
+  }
 
   // 5. Range-aware numeric match
   const answerNum = parseFloat(raw);
@@ -1774,13 +1493,13 @@ function findExMatchingOption(field, answer) {
   }
 
   // 6. Word-overlap fallback (words > 3 chars only)
-  const answerWords = new Set(normalized.split(/\W+/).filter(w => w.length > 3));
-  if (answerWords.size > 0) {
+  const overlapWords = new Set(normalized.split(/\W+/).filter(w => w.length > 3));
+  if (overlapWords.size > 0) {
     let bestOpt = null;
     let bestScore = 0;
     for (const o of opts) {
       const optWords = String(o.label || '').toLowerCase().split(/\W+/).filter(Boolean);
-      const score = optWords.filter(w => answerWords.has(w)).length;
+      const score = optWords.filter(w => overlapWords.has(w)).length;
       if (score > bestScore) { bestScore = score; bestOpt = o; }
     }
     if (bestOpt && bestScore >= 1) return bestOpt;
@@ -1848,7 +1567,7 @@ async function applyAnswerToField(field, answer) {
   if (['text', 'textarea', 'number', 'email', 'tel', 'url'].includes(type)) {
     const el = resolveElement(mainTarget);
     if (!el) return false;
-    setExInputValue(el, String(answer));
+    fillNative(el, String(answer));
     return true;
   }
 
@@ -1947,6 +1666,33 @@ async function applyAnswerToField(field, answer) {
       }
     }
 
+    const answerText = normalizeText(getAnswerText(answer));
+    for (const target of (field.targets || [])) {
+      const targetText = normalizeText(target.label || target.value || '');
+      if (!targetText || !(targetText === answerText || targetText.includes(answerText) || answerText.includes(targetText))) {
+        continue;
+      }
+      const el = resolveElement(target);
+      if (el && isVisible(el)) {
+        if (!el.checked) el.click();
+        return await verifyRadioSelection(field, answer, el);
+      }
+    }
+
+    if (field.name) {
+      const radios = Array.from(
+        document.querySelectorAll(`input[type="radio"][name="${CSS.escape(field.name)}"]`)
+      );
+
+      for (const radio of radios) {
+        const labelText = normalizeText(getOptionLabel(radio) || radio.value || '');
+        if (labelText && (labelText === answerText || labelText.includes(answerText) || answerText.includes(labelText))) {
+          if (!radio.checked) radio.click();
+          return await verifyRadioSelection(field, answer, radio);
+        }
+      }
+    }
+
     console.warn(
       `[QuickFill] Radio no match: question="${String(field.question || field.label || '(unknown)')}" answer="${describeAnswerForLog(answer)}"`,
       {
@@ -2037,6 +1783,11 @@ async function applyAnswerToField(field, answer) {
         ).find(c => c.value === match.value) || null;
       }
 
+      if (el?.checked) {
+        success = true;
+        continue;
+      }
+
       if (el && !el.checked) {
         el.click();
         success = true;
@@ -2064,7 +1815,7 @@ function isGarbageLabel(text) {
 function mapExtractedFieldForAI(field, jobDesc = '') {
   const mainTarget = field.targets?.[0] || {};
 
-  let labelText = field.question || field.label || '';
+  let labelText = field.questionText || field.question || field.label || '';
 
   if (isGarbageLabel(labelText)) {
     if (field.options && field.options.length) {
@@ -2085,6 +1836,7 @@ function mapExtractedFieldForAI(field, jobDesc = '') {
 
   return {
     label: labelText,
+    questionText: labelText,
     name: mainTarget.name || field.dom?.name || '',
     placeholder: field.dom?.placeholder || '',
     type: looksLikeExperienceSelect ? 'number' : (field.type || ''),
@@ -2293,13 +2045,22 @@ async function applyAnswer(field, answer) {
   // ── Custom radio (ARIA role="radio") ──────────────────────────────────
   if (field.tag === 'custom-radio') {
     const container = findCustomRadioGroupByName(field.name);
-    const radioOpts = getRadioLikeOptions(container);
+    const radioOpts = container ? getRadioLikeOptions(container) : [];
     const ans = normalizeText(answer);
     for (const item of radioOpts) {
       const txt = normalizeText(item.text);
       if (txt === ans || txt.includes(ans) || ans.includes(txt)) {
         clickElement(item.el);
         return await verifyRadioSelection(field, answer, item.el);
+      }
+    }
+    for (const target of (field.targets || [])) {
+      const txt = normalizeText(target.label || target.value || '');
+      if (!txt || !(txt === ans || txt.includes(ans) || ans.includes(txt))) continue;
+      const el = resolveElement(target);
+      if (el && isVisible(el)) {
+        clickElement(el);
+        return await verifyRadioSelection(field, answer, el);
       }
     }
     if (radioOpts.length) {
@@ -2348,6 +2109,23 @@ async function applyAnswer(field, answer) {
   if (field.tag === 'select') {
     const ans  = normalizeText(answer);
     const opts = Array.from(target.options);
+    const looksLikeCountrySelect =
+      opts.length >= 20 &&
+      opts.some(o => /^canada$/i.test((o.text || '').trim())) &&
+      opts.some(o => /^united states$/i.test((o.text || '').trim())) &&
+      opts.some(o => /^afghanistan$/i.test((o.text || '').trim()));
+
+    if (looksLikeCountrySelect) {
+      const exactCountry = opts.find(o => normalizeText(o.text || '') === ans);
+      if (exactCountry) {
+        target.value = exactCountry.value;
+        target.dispatchEvent(new Event('input',  { bubbles: true }));
+        target.dispatchEvent(new Event('change', { bubbles: true }));
+        target.dispatchEvent(new Event('blur',   { bubbles: true }));
+        return true;
+      }
+    }
+
     let match  = opts.find(o => normalizeText(o.text || '') === ans);
     if (!match) match = opts.find(o => {
       const t = normalizeText(o.text || '');
@@ -2777,8 +2555,9 @@ function validateAnswerAgainstFieldModel(field, answer) {
   if (type === 'number') {
     const raw = Array.isArray(answer) ? answer[0] : answer;
     const text = clean(String(raw));
-    return /^-?\d+(\.\d+)?$/.test(text)
-      ? { ok: true, normalizedAnswer: text }
+    const numeric = (text.match(/-?\d+(\.\d+)?/) || [])[0] || '';
+    return /^-?\d+(\.\d+)?$/.test(numeric)
+      ? { ok: true, normalizedAnswer: numeric }
       : { ok: false, reason: 'numeric field received non-numeric answer' };
   }
 
@@ -2796,10 +2575,15 @@ function validateAnswerAgainstFieldModel(field, answer) {
       ? answer.map(v => clean(String(v))).filter(Boolean)
       : clean(String(answer)).split(',').map(v => clean(v)).filter(Boolean);
     if (!values.length) return field.required ? { ok: false, reason: 'required checkbox group is empty' } : { ok: true, normalizedAnswer: [] };
-    const invalid = values.find(v => !findExMatchingOption(field, v));
-    return invalid
-      ? { ok: false, reason: `checkbox option not allowed: ${invalid}` }
-      : { ok: true, normalizedAnswer: values };
+    const normalizedValues = [];
+    for (const value of values) {
+      const match = findExMatchingOption(field, value);
+      if (!match) {
+        return { ok: false, reason: `checkbox option not allowed: ${value}` };
+      }
+      normalizedValues.push(clean(match.label || match.value || value));
+    }
+    return { ok: true, normalizedAnswer: Array.from(new Set(normalizedValues)) };
   }
 
   if (type === 'radio' || type === 'select' || field.tag === 'aria-radio') {
@@ -2817,90 +2601,6 @@ function validateAnswerAgainstFieldModel(field, answer) {
   return text
     ? { ok: true, normalizedAnswer: text }
     : { ok: false, reason: 'empty scalar answer' };
-}
-
-// ─── Retry answer request ──────────────────────────────────────────────────
-
-async function requestRetryAnswer(field, previousAnswer, validationError) {
-  return new Promise(resolve => {
-    chrome.runtime.sendMessage({
-      action: 'RETRY_FIELD_ANSWER',
-      field,
-      previousAnswer,
-      validationError,
-    }, resp => {
-      if (chrome.runtime.lastError || !resp?.ok) { resolve(null); return; }
-      resolve(resp.answer || null);
-    });
-  });
-}
-
-async function fillFieldWithValidationRetry(field, answer, log) {
-  if (!answer || answer === '__SKIP__') return { ok: false, skipped: true };
-
-  const applied = await applyAnswer(field, answer);
-  if (!applied) return { ok: false, reason: 'apply_failed' };
-
-  await sleep(300);
-
-  const el =
-    document.querySelector(`[data-__qf-id="${CSS.escape(field.id)}"]`) ||
-    (field.name
-      ? document.querySelector(
-          `input[name="${CSS.escape(field.name)}"], ` +
-          `textarea[name="${CSS.escape(field.name)}"], ` +
-          `select[name="${CSS.escape(field.name)}"]`
-        )
-      : null);
-
-  if (!el || field.tag === 'radio' || field.tag === 'custom-radio' || field.tag === 'combobox' || field.tag === 'checkbox-group') {
-    return { ok: true, retried: false };
-  }
-
-  let state = getValidationState(el);
-  if (!state.isInvalid) return { ok: true, retried: false };
-
-  if (log) {
-    log.push(`⚠ Validation failed: "${field.label}"${state.errorText ? ` — ${state.errorText}` : ''}`);
-    log.push(`⟳ Retrying: "${field.label}"`);
-  }
-
-  const retryAnswer = await requestRetryAnswer(field, answer, state.errorText);
-  if (!retryAnswer || retryAnswer === '__SKIP__')
-    return { ok: false, retried: true, reason: 'no_retry_answer', errorText: state.errorText };
-
-  const reApplied = await clearAndType(el, retryAnswer);
-  if (!reApplied)
-    return { ok: false, retried: true, reason: 'retry_apply_failed', errorText: state.errorText };
-
-  await sleep(300);
-  state = getValidationState(el);
-  if (!state.isInvalid) return { ok: true, retried: true };
-  return { ok: false, retried: true, reason: 'still_invalid', errorText: state.errorText };
-}
-
-// ─── AI answer request ─────────────────────────────────────────────────────
-
-async function requestAiAnswers(fields) {
-  const serialisable = fields.map(f => {
-    const { _indeedOptions, _ariaOptions, ...rest } = f;
-    return rest;
-  });
-  return new Promise((resolve, reject) => {
-    chrome.runtime.sendMessage({ action: 'GET_AI_ANSWERS_ONLY', fields: serialisable }, res => {
-      if (chrome.runtime.lastError) {
-        reject(new Error(chrome.runtime.lastError.message || 'Background script unreachable'));
-        return;
-      }
-      if (!res) { reject(new Error('No response from background script')); return; }
-      if (!res.ok) {
-        console.warn('[QuickFill] GET_AI_ANSWERS_ONLY error:', res.error);
-        resolve({ ok: false, answers: [], error: res.error });
-        return;
-      }
-      resolve(res);
-    });
-  });
 }
 
 // ─── Step summary ──────────────────────────────────────────────────────────
@@ -2930,22 +2630,6 @@ function buildStepSummary(answers) {
 
 // ─── Flow state helpers ────────────────────────────────────────────────────
 
-function reportProgress(state) {
-  try {
-    chrome.runtime.sendMessage({ action: 'REPORT_FLOW_PROGRESS', state }, () => {
-      void chrome.runtime.lastError;
-    });
-  } catch (_) {}
-}
-
-function isCancelledInStorage() {
-  return new Promise(resolve => {
-    try {
-      chrome.storage.local.get(['flowCancelled'], d => resolve(!!d.flowCancelled));
-    } catch (_) { resolve(false); }
-  });
-}
-
 function pushLog(log, msg) {
   const next = [...log, msg];
   return next.length > 200 ? next.slice(next.length - 200) : next;
@@ -2954,538 +2638,60 @@ function pushLog(log, msg) {
 // ─── Multi-step runner ─────────────────────────────────────────────────────
 
 async function runMultiStepFlow(maxSteps = 12) {
-  let totalFilled = 0;
-  let log = [];
-  let consecutiveZeroFill = 0;
-
-  chrome.storage.local.set({ flowCancelled: false });
-  reportProgress({
-    status: 'running',
-    step: 0,
-    maxSteps,
-    filled: 0,
-    message: 'Starting…',
-    log,
-    startedAt: Date.now(),
-    phase: FLOW_STATES.SCAN_PAGE,
-    stats: { profile: 0, rule: 0, ai: 0, memory: 0, skipped: 0, detected: 0, answered: 0, applied: 0, verified: 0, valid: 0, invalid: 0, blocked: 0 },
-  });
-
-  const totalStats = { profile: 0, rule: 0, ai: 0, memory: 0, skipped: 0, detected: 0, answered: 0, applied: 0, verified: 0, valid: 0, invalid: 0, blocked: 0 };
-
-  const _jobDesc = await _readCachedJobDescription();
-
-  for (let step = 0; step < maxSteps; step++) {
-    if (await isCancelledInStorage()) {
-      log = pushLog(log, '⊘ Stopped by user');
-      reportProgress({
-        status: 'stopped',
-        step,
-        maxSteps,
-        filled: totalFilled,
-        message: 'Stopped by user',
-        log,
-        stats: totalStats,
-      });
-      return { ok: false, submitted: false, totalFilled, error: 'Cancelled by user' };
-    }
-
-    const pageText = getPageText();
-    const beforeSnapshot = pageText.slice(0, 2000);
-    const pageInfo = classifyCurrentPage(pageText);
-    log = pushLog(log, `📍 Step ${step + 1} – ${pageInfo.type}${pageInfo.reason ? ` (${pageInfo.reason})` : ''}`);
-    reportProgress({
-      status: 'running',
-      step: step + 1,
-      maxSteps,
-      filled: totalFilled,
-      message: `Step ${step + 1} – ${pageInfo.type}`,
-      log,
-      stats: totalStats,
-      phase: FLOW_STATES.CLASSIFY_PAGE,
-      pageType: pageInfo.type,
-      pageReason: pageInfo.reason,
-    });
-
-    if (isSmartApplyPage() && getSmartApplyStep() === 'redirect') {
-      await sleep(800);
-      continue;
-    }
-
-    if (pageInfo.type === PAGE_TYPES.CAPTCHA_OR_BLOCKED) {
-      log = pushLog(log, `✗ Blocked by captcha or access wall`);
-      reportProgress({
-        status: 'error',
-        step: step + 1,
-        maxSteps,
-        filled: totalFilled,
-        message: 'Blocked by captcha or access check',
-        log,
-        stats: totalStats,
-        phase: FLOW_STATES.BLOCKED,
-        pageType: pageInfo.type,
-      });
-      return { ok: false, submitted: false, totalFilled, error: 'Captcha or blocked page detected', pageType: pageInfo.type };
-    }
-
-    if (pageInfo.type === PAGE_TYPES.REQUIREMENT_WARNING) {
-      log = pushLog(log, `⚠ Step ${step + 1} – Requirements warning, clicking Apply Anyway`);
-      reportProgress({
-        status: 'running',
-        step: step + 1,
-        maxSteps,
-        filled: totalFilled,
-        message: 'Bypassing requirements warning…',
-        log,
-        stats: totalStats,
-        phase: FLOW_STATES.NAVIGATE,
-        pageType: pageInfo.type,
-      });
-      const btn = findApplyAnywayButton();
-      if (btn) {
-        await safeNavigate(btn, beforeSnapshot);
-        continue;
-      }
-    }
-
-    if (pageInfo.type === PAGE_TYPES.REVIEW_PAGE) {
-      log = pushLog(log, `🏁 Reached review page — stopping before final submission`);
-      reportProgress({
-        status: 'done',
-        step: step + 1,
-        maxSteps,
-        filled: totalFilled,
-        message: 'Reached review page — review and submit manually',
-        log,
-        stats: totalStats,
-        phase: FLOW_STATES.DONE,
-        pageType: pageInfo.type,
-        stoppedAtSubmit: true,
-      });
-      return { ok: true, submitted: false, stoppedAtSubmit: true, totalFilled, steps: step + 1, pageType: pageInfo.type };
-    }
-
-    if (pageInfo.type !== PAGE_TYPES.RELEVANT_EXPERIENCE_JOB) {
-      let fields = collectFields(pageInfo.type);
-      if (fields.length === 0) {
-        await sleep(400);
-        fields = collectFields(pageInfo.type);
-      }
-
-      if (fields.length > 0) {
-        totalStats.detected += fields.length;
-        log = pushLog(
-          log,
-          `⟳ Step ${step + 1} – Processing ${fields.length} field${fields.length === 1 ? '' : 's'}…`
-        );
-        reportProgress({
-          status: 'running',
-          step: step + 1,
-          maxSteps,
-          filled: totalFilled,
-          message: `Step ${step + 1} – Processing ${fields.length} field${fields.length === 1 ? '' : 's'}…`,
-          log,
-          stats: totalStats,
-          phase: FLOW_STATES.BUILD_FIELD_MODELS,
-          pageType: pageInfo.type,
-        });
-
-        if (await isCancelledInStorage()) {
-          log = pushLog(log, '⊘ Stopped by user');
-          reportProgress({
-            status: 'stopped',
-            step: step + 1,
-            maxSteps,
-            filled: totalFilled,
-            message: 'Stopped by user',
-            log,
-            stats: totalStats,
-          });
-          return { ok: false, submitted: false, totalFilled, error: 'Cancelled by user' };
-        }
-
-        const preFillBlockers = scanBlockingFields(fields);
-        const preFillSummary = summarizeBlockingFields(preFillBlockers);
-        log = pushLog(
-          log,
-          preFillBlockers.hasBlocking
-            ? `⚠ Pre-fill validation scan — blocking fields detected${preFillSummary ? ` (${preFillSummary})` : ''}`
-            : '✓ Pre-fill validation scan — no blocking fields detected'
-        );
-        reportProgress({
-          status: 'running',
-          step: step + 1,
-          maxSteps,
-          filled: totalFilled,
-          message: 'Scanning required fields before fill…',
-          log,
-          stats: totalStats,
-          phase: FLOW_STATES.CHECK_ERRORS,
-          preFillBlockers,
-        });
-
-        const aiReadyFields = fields.map(f => mapExtractedFieldForAI(f, _jobDesc));
-
-        const aiResp = await Promise.race([
-          requestAiAnswers(aiReadyFields),
-          new Promise(res => setTimeout(() => res({ ok: false, answers: [], error: 'timeout' }), 4000)),
-        ]);
-        const answers = aiResp?.answers || [];
-
-        const allNetworkErrors = answers.length > 0 &&
-          answers.every(a => a.source === 'network_error' || a.source === 'skipped') &&
-          answers.some(a => a.source === 'network_error');
-
-        if (allNetworkErrors && fields.length > 0) {
-          log = pushLog(log, `✗ Ollama appears to be offline — all fields skipped`);
-          reportProgress({
-            status: 'error',
-            step: step + 1,
-            maxSteps,
-            filled: totalFilled,
-            message: 'Ollama offline — start Ollama and try again',
-            log,
-            stats: totalStats,
-          });
-          return { ok: false, submitted: false, totalFilled, error: 'Ollama offline' };
-        }
-
-        for (const a of answers) {
-          const src = (a.source || '').toLowerCase();
-          if (src.includes('memory')) totalStats.memory++;
-          else if (src === 'profile') totalStats.profile++;
-          else if (src === 'rule') totalStats.rule++;
-          else if (src === 'ai') totalStats.ai++;
-          else totalStats.skipped++;
-        }
-
-        let filled = 0;
-
-        for (let i = 0; i < fields.length; i++) {
-          const field = fields[i];
-          const resolved = answers[i] || {};
-          let answer = resolved.answer;
-          let chosenAnswer = answer;
-          let applied = false;
-
-          if (answer == null || answer === '' || answer === '__SKIP__') {
-            const blockingState = getFieldBlockingState(field);
-            if (blockingState.stillBlocking) totalStats.blocked++;
-            log = appendFieldLifecycleLog(log, field, answer == null || answer === '' ? '__SKIP__' : answer, false, blockingState);
-            continue;
-          }
-
-          if (Array.isArray(answer)) {
-            answer = answer
-              .map(v => (v == null ? '' : String(v).trim()))
-              .filter(Boolean);
-            if (!answer.length) {
-              const blockingState = getFieldBlockingState(field);
-              log = appendFieldLifecycleLog(log, field, '__SKIP__', false, blockingState);
-              continue;
-            }
-          } else if (typeof answer === 'string') {
-            answer = answer.trim();
-            if (!answer) {
-              const blockingState = getFieldBlockingState(field);
-              log = appendFieldLifecycleLog(log, field, '__SKIP__', false, blockingState);
-              continue;
-            }
-          } else if (typeof answer === 'number' || typeof answer === 'boolean') {
-            answer = String(answer);
-          } else {
-            console.warn('Skipping invalid non-serializable answer', {
-              field,
-              resolved,
-              answerType: typeof answer,
-            });
-            const blockingState = getFieldBlockingState(field);
-            log = appendFieldLifecycleLog(log, field, '__SKIP__', false, blockingState);
-            continue;
-          }
-
-          if (field.type === 'checkbox_group' && typeof answer === 'string') {
-            answer = answer
-              .split(',')
-              .map(s => s.trim())
-              .filter(Boolean);
-            if (!answer.length) {
-              const blockingState = getFieldBlockingState(field);
-              log = appendFieldLifecycleLog(log, field, '__SKIP__', false, blockingState);
-              continue;
-            }
-          }
-
-          chosenAnswer = answer;
-
-          const validation = validateAnswerAgainstFieldModel(field, answer);
-          if (!validation.ok) {
-            totalStats.invalid++;
-            const blockingState = getFieldBlockingState(field);
-            log = appendConstraintFailureLog(log, field, answer, validation.reason, blockingState);
-            continue;
-          }
-
-          answer = validation.normalizedAnswer;
-          chosenAnswer = answer;
-          totalStats.answered++;
-
-          try {
-            applied = field.targets?.length
-              ? await applyAnswerToField(field, answer)
-              : await applyAnswer(field, answer);
-            if (applied) {
-              filled++;
-              totalStats.applied++;
-            }
-          } catch (err) {
-            console.warn('applyAnswerToField failed', {
-              field,
-              resolved,
-              normalizedAnswer: answer,
-              error: err?.message || err,
-            });
-          }
-
-          const blockingState = getFieldBlockingState(field);
-          if (applied) totalStats.verified++;
-          if (blockingState.stillBlocking) {
-            totalStats.invalid++;
-            totalStats.blocked++;
-          } else if (applied) {
-            totalStats.valid++;
-          }
-          log = appendFieldLifecycleLog(log, field, chosenAnswer, applied, blockingState);
-        }
-
-        totalFilled += filled;
-
-        if (filled === 0 && fields.length > 0) {
-          consecutiveZeroFill++;
-          if (consecutiveZeroFill >= 2) {
-            log = pushLog(log, `✗ Form stuck — 0/${fields.length} filled for ${consecutiveZeroFill} steps. Required fields need manual input or AI unavailable.`);
-            reportProgress({
-              status: 'error',
-              step: step + 1,
-              maxSteps,
-              filled: totalFilled,
-              message: 'Form stuck — required fields could not be auto-filled. Check the Logs tab.',
-              log,
-              stats: totalStats,
-              phase: FLOW_STATES.BLOCKED,
-              pageType: pageInfo.type,
-            });
-            return { ok: false, submitted: false, totalFilled, steps: step + 1, error: 'Form stuck — 0 fields filled for 2+ consecutive steps' };
-          }
-        } else {
-          consecutiveZeroFill = 0;
-        }
-
-        const blockers = scanBlockingFields();
-        if (blockers.hasBlocking) {
-          const blockerSummary = summarizeBlockingFields(blockers);
-          log = pushLog(log, `⚠ Blocking fields still detected after fill${blockerSummary ? ` (${blockerSummary})` : ''} — trying Continue anyway`);
-          reportProgress({
-            status: 'running',
-            step: step + 1,
-            maxSteps,
-            filled: totalFilled,
-            message: 'Some fields still look blocked — trying Continue anyway',
-            log,
-            stats: totalStats,
-            phase: FLOW_STATES.VERIFY_FIELDS,
-            blockers,
-            pageType: pageInfo.type,
-          });
-        }
-
-        const summary = buildStepSummary(answers);
-        log = pushLog(log, `✓ Step ${step + 1} – Filled ${filled}/${fields.length} ${summary}`);
-        reportProgress({
-          status: 'running',
-          step: step + 1,
-          maxSteps,
-          filled: totalFilled,
-          message: `Step ${step + 1} – Filled ${filled} field${filled === 1 ? '' : 's'}`,
-          log,
-          stats: totalStats,
-          phase: FLOW_STATES.VERIFY_FIELDS,
-          pageType: pageInfo.type,
-        });
-        await sleep(100);
-      } else {
-        log = pushLog(log, `– Step ${step + 1} – No fields on this page, looking for navigation…`);
-        reportProgress({
-          status: 'running',
-          step: step + 1,
-          maxSteps,
-          filled: totalFilled,
-          message: `Step ${step + 1} – No fields, looking for Continue…`,
-          log,
-          stats: totalStats,
-          phase: FLOW_STATES.NAVIGATE,
-          pageType: pageInfo.type,
-        });
-      }
-    } else {
-      log = pushLog(log, `– Step ${step + 1} – Skipping page (special page type)`);
-      reportProgress({
-        status: 'running',
-        step: step + 1,
-        maxSteps,
-        filled: totalFilled,
-        message: `Step ${step + 1} – Skipping special page…`,
-        log,
-        stats: totalStats,
-        phase: FLOW_STATES.NAVIGATE,
-        pageType: pageInfo.type,
-      });
-    }
-
-    const blockers = scanBlockingFields();
-    if (blockers.hasBlocking) {
-      const blockerSummary = summarizeBlockingFields(blockers);
-      log = pushLog(log, `⚠ Blocking fields remain before continue${blockerSummary ? ` (${blockerSummary})` : ''} — letting page validation decide`);
-      reportProgress({
-        status: 'running',
-        step: step + 1,
-        maxSteps,
-        filled: totalFilled,
-        message: 'Trying Continue with remaining blockers',
-        log,
-        stats: totalStats,
-        phase: FLOW_STATES.NAVIGATE,
-        blockers,
-        pageType: pageInfo.type,
-      });
-    }
-
-    const submitBtn = findSubmitButton();
-    if (submitBtn) {
-      log = pushLog(log, `🏁 Reached terminal review state — ${totalFilled} field${totalFilled === 1 ? '' : 's'} filled`);
-      reportProgress({
-        status: 'done',
-        step: step + 1,
-        maxSteps,
-        filled: totalFilled,
-        message: 'Reached submit page — review and submit manually',
-        log,
-        stoppedAtSubmit: true,
-        stats: totalStats,
-        phase: FLOW_STATES.DONE,
-        pageType: PAGE_TYPES.REVIEW_PAGE,
-      });
-      return {
-        ok: true,
-        submitted: false,
-        stoppedAtSubmit: true,
-        totalFilled,
-        steps: step + 1,
-      };
-    }
-
-    const btn = await findAnyNavigationButtonWithRetry();
-
-    if (!btn) {
-      log = pushLog(log, `✗ No Continue/Next button found at step ${step + 1}`);
-      reportProgress({
-        status: 'error',
-        step: step + 1,
-        maxSteps,
-        filled: totalFilled,
-        message: 'No Continue/Next button found',
-        log,
-        stats: totalStats,
-        phase: FLOW_STATES.BLOCKED,
-        pageType: pageInfo.type,
-      });
-      return {
-        ok: false,
-        submitted: false,
-        totalFilled,
-        steps: step + 1,
-        error: 'No Continue/Next/Submit button found',
-      };
-    }
-
-    const btnText = getBtnText(btn);
-
-    if (isSubmitButton(btn)) {
-      log = pushLog(log, `🏁 Submit button detected — stopping for manual review`);
-      reportProgress({
-        status: 'done',
-        step: step + 1,
-        maxSteps,
-        filled: totalFilled,
-        message: 'Submit button detected — review and submit manually',
-        log,
-        stats: totalStats,
-        phase: FLOW_STATES.DONE,
-        pageType: PAGE_TYPES.REVIEW_PAGE,
-        stoppedAtSubmit: true,
-      });
-      return { ok: true, submitted: false, stoppedAtSubmit: true, totalFilled, steps: step + 1 };
-    }
-
-    log = pushLog(log, `→ Step ${step + 1} – ${btnText || 'Continue'}`);
-    reportProgress({
-      status: 'running',
-      step: step + 1,
-      maxSteps,
-      filled: totalFilled,
-      message: `Step ${step + 1} – Going to next page…`,
-      log,
-      stats: totalStats,
-      phase: FLOW_STATES.NAVIGATE,
-      pageType: pageInfo.type,
-    });
-    await safeNavigate(btn, beforeSnapshot);
-
-    const afterSnapshot = (document.body?.innerText || '').replace(/\s+/g, ' ').trim().toLowerCase().slice(0, 800);
-    const pageActuallyChanged = afterSnapshot !== beforeSnapshot.slice(0, 800);
-
-    if (!pageActuallyChanged) {
-      const afterText = getPageText();
-      const afterPageInfo = classifyCurrentPage(afterText);
-      const blockersAfterNav = scanBlockingFields();
-      const blockerSummary = summarizeBlockingFields(blockersAfterNav);
-      log = pushLog(log, `⚠ Step ${step + 1} – Page did not change after clicking "${getBtnText(btn)}"`);
-      if (afterPageInfo.type === pageInfo.type) {
-        log = pushLog(log, `✗ Navigation blocked on ${afterPageInfo.type}${blockerSummary ? ` (${blockerSummary})` : ''}`);
-        reportProgress({
-          status: 'error',
-          step: step + 1,
-          maxSteps,
-          filled: totalFilled,
-          message: 'Navigation blocked — page did not advance',
-          log,
-          stats: totalStats,
-          phase: FLOW_STATES.BLOCKED,
-          pageType: afterPageInfo.type,
-          blockers: blockersAfterNav,
-        });
-        return { ok: false, submitted: false, totalFilled, error: 'Navigation stuck', pageType: afterPageInfo.type, blockers: blockersAfterNav };
-      }
-      continue;
-    }
+  if (typeof globalThis.runSmartApplyFlow === 'function') {
+    return globalThis.runSmartApplyFlow(maxSteps);
   }
 
-  log = pushLog(log, `⚠ Max steps (${maxSteps}) reached`);
-  reportProgress({
-    status: 'error',
-    step: maxSteps,
-    maxSteps,
-    filled: totalFilled,
-    message: 'Max steps reached',
-    log,
-    stats: totalStats,
-  });
-  return { ok: false, submitted: false, totalFilled, error: 'Max steps reached' };
+  return {
+    ok: false,
+    submitted: false,
+    error: globalThis.__qfFlowRunnerLoaded
+      ? 'runSmartApplyFlow is unavailable: flowRunner loaded but did not export the function'
+      : 'runSmartApplyFlow is unavailable: flowRunner did not load',
+  };
 }
+
+Object.assign(globalThis, {
+  getLabelText,
+  harvestIndeedNamedRadioGroups,
+  harvestIndeedNamedCheckboxGroups,
+  harvestIndeedContainerFields,
+  isRealQuestionField,
+  collectRadioGroup,
+  collectCheckboxGroup,
+  collectNativeSelect,
+  collectFakeCombobox,
+  collectSingleField,
+  attachOtherFollowups,
+  autoClickConsentCheckboxes,
+  harvestAriaRadioGroups,
+  enrichCanonicalFieldModel,
+  resolveElement,
+  cssPath,
+  applyAnswerToField,
+  applyAnswer,
+  mapExtractedFieldForAI,
+  describeField,
+  readFieldValue,
+  scanBlockingFields,
+  summarizeBlockingFields,
+  validateAnswerAgainstFieldModel,
+  pushLog,
+});
 
 // ─── Message listener ──────────────────────────────────────────────────────
 
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
+
+  if (msg.action === 'PING_QF') {
+    sendResponse({
+      ok: true,
+      qfLoaded: true,
+      flowRunnerLoaded: !!globalThis.__qfFlowRunnerLoaded,
+      url: location.href,
+    });
+    return;
+  }
 
   if (msg.action === 'HARVEST_FIELDS') {
     sendResponse({ fields: collectFields() });
