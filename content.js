@@ -2166,6 +2166,21 @@ function getFieldContainer(el) {
   );
 }
 
+function safeCheckValidity(el) {
+  if (!el || typeof el.checkValidity !== 'function') return true;
+  try {
+    return el.checkValidity();
+  } catch (error) {
+    console.warn('[QuickFill] Ignoring invalid native validation pattern:', {
+      pattern: el.getAttribute?.('pattern') || '',
+      name: el.getAttribute?.('name') || '',
+      type: el.getAttribute?.('type') || '',
+      error: error?.message || String(error),
+    });
+    return true;
+  }
+}
+
 function getValidationState(el) {
   if (!el) return { isInvalid: false, errorText: '' };
   const container = getFieldContainer(el);
@@ -2174,8 +2189,7 @@ function getValidationState(el) {
     el.getAttribute('aria-invalid') === 'true' ||
     el.getAttribute('data-invalid')  === 'true';
 
-  const nativeInvalid =
-    typeof el.checkValidity === 'function' ? !el.checkValidity() : false;
+  const nativeInvalid = !safeCheckValidity(el);
 
   const invalidClass =
     el.matches('.invalid, .error, .is-invalid, [data-invalid="true"]') ||

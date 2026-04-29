@@ -367,6 +367,38 @@ function buildSingleFieldUserMessage(field) {
   return msg;
 }
 
+function isPageChromeOrReviewPrompt(value) {
+  const text = String(value || '').replace(/\s+/g, ' ').trim().toLowerCase();
+  if (!text) return false;
+
+  const fragments = [
+    'start of main content',
+    'please review your application',
+    'you will not be able to make changes after you submit your application',
+    'get email updates for the latest',
+    'by creating a job alert',
+    'by pressing apply',
+    'having an issue with this application',
+    'this site is protected by recaptcha',
+    'google’s privacy policy',
+    "google's privacy policy",
+    'terms of service apply',
+  ];
+
+  if (fragments.some(fragment => text.includes(fragment))) return true;
+  return text.length > 260 && /terms|cookie|privacy|recaptcha|job alert|submit your application|review your application/i.test(text);
+}
+
+function isProfileSummaryPrompt(value) {
+  const text = String(value || '').replace(/\s+/g, ' ').trim().toLowerCase();
+  return (
+    /\babout (you|yourself|me)\b/.test(text) ||
+    /\bprofessional summary\b/.test(text) ||
+    /\bbio\b/.test(text) ||
+    /\btell us about (you|yourself)\b/.test(text)
+  );
+}
+
 function generateSingleFieldFallback(field, profile) {
   const question = String(field?.label || field?.questionText || '').trim();
   const text = question.toLowerCase();
@@ -378,6 +410,7 @@ function generateSingleFieldFallback(field, profile) {
     : 'cloud infrastructure, networking, and security';
 
   if (!question) return '__SKIP__';
+  if (isPageChromeOrReviewPrompt(question)) return '__SKIP__';
 
   if (/push back on a decision|wrong call|how did you handle it/i.test(text)) {
     return `I push back respectfully with evidence, risks, and a clear alternative. In team projects, I explain the tradeoffs early, align on the outcome we need, and then support the final decision once the team agrees on the best path.`;
@@ -395,16 +428,9 @@ function generateSingleFieldFallback(field, profile) {
     return `I learned the hard way that assumptions made early can create avoidable rework later. Now I validate scope, owners, and success criteria up front, document decisions clearly, and check for risks early so delivery stays predictable.`;
   }
 
-  if (isDescriptiveTextField(field)) {
+  if (isDescriptiveTextField(field) && isProfileSummaryPrompt(question)) {
     if (summary) return summary.slice(0, 320);
     return `${headline}. I bring about ${years} years of hands-on experience across ${skillLead}, and I focus on clear communication, reliable execution, and learning quickly.`;
-  }
-
-  // Radio/select: return first option rather than __SKIP__
-// This mirrors Python bot's "pick first option + log" behavior
-  if (field?.options?.length && ['radio', 'select', 'checkbox_group'].includes(String(type))) {
-  const firstOpt = String(field.options[0]?.label || field.options[0] || '').trim();
-  if (firstOpt) return firstOpt;
   }
 
   return '__SKIP__';

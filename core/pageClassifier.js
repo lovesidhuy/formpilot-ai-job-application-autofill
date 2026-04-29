@@ -80,7 +80,9 @@ function isCaptchaOrBlockedPage(text) {
   );
   const hasExplicitBlockText = /verify you are human|security check|access denied|temporarily blocked|unusual traffic|complete the captcha|solve the captcha/i.test(bodyText);
   const hasOnlyLegalNotice = /protected by recaptcha|google.?s privacy policy|terms of service apply/i.test(bodyText) && !hasExplicitBlockText;
-  return (hasCaptchaWidget && !hasOnlyLegalNotice) || hasExplicitBlockText;
+  if (hasExplicitBlockText) return true;
+  if (!hasCaptchaWidget || hasOnlyLegalNotice) return false;
+  return getVisibleQuestionControlCount() === 0;
 }
 
 function isResumeSelectionPage(text) {
@@ -89,9 +91,13 @@ function isResumeSelectionPage(text) {
 }
 
 function isReviewPage(text) {
-  return getCurrentStep().step === 'REVIEW' ||
-    /please review your application|review your application|application review|before submitting|submit your application/i.test(text || '') ||
-    !!findSubmitButton();
+  if (getCurrentStep().step === 'REVIEW') return true;
+  if (/please review your application|review your application|application review|before submitting/i.test(text || '')) return true;
+
+  const hasEditableQuestions = getVisibleQuestionControlCount() > 0;
+  if (hasEditableQuestions) return false;
+
+  return /submit your application/i.test(text || '') || !!findSubmitButton();
 }
 
 function getVisibleQuestionControlCount() {

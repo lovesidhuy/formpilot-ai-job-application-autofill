@@ -172,6 +172,32 @@ function isProfileSummaryStyleQuestion(questionText) {
   );
 }
 
+function isPageChromeOrReviewText(questionText) {
+  const text = normalizePipelineText(questionText).toLowerCase();
+  if (!text) return false;
+
+  const chromeFragments = [
+    'start of main content',
+    'please review your application',
+    'you will not be able to make changes after you submit your application',
+    'get email updates for the latest',
+    'by creating a job alert',
+    'by pressing apply',
+    'having an issue with this application',
+    'this site is protected by recaptcha',
+    'google’s privacy policy',
+    "google's privacy policy",
+    'terms of service apply',
+  ];
+
+  if (chromeFragments.some(fragment => text.includes(fragment))) return true;
+
+  return (
+    text.length > 260 &&
+    /terms|cookie|privacy|recaptcha|job alert|submit your application|review your application/i.test(text)
+  );
+}
+
 function isStatementLikeTextareaPrompt(questionText) {
   const text = normalizePipelineText(questionText).toLowerCase();
   if (!text) return false;
@@ -465,6 +491,12 @@ class AnswerPipeline {
 
     this.logger.question(questionText, field.type, options);
 
+    if (isPageChromeOrReviewText(questionText)) {
+      this.pushLog(`[Guard] skipped page/review text that is not a field question: '${questionText.slice(0, 80)}'`);
+      this.stats.skipped++;
+      return { answer: '__SKIP__', originalAnswer: '__SKIP__', normalizedAnswer: '__SKIP__', source: 'skipped' };
+    }
+
     const hardRule = resolveHardRules(normalizedField, this.profile);
     if (hardRule?.answer) {
       this.logger.ruleAnswer(hardRule.answer);
@@ -545,19 +577,13 @@ class AnswerPipeline {
       };
     }
 
-    // Hard fallback: NEVER leave a field blank (mirrors Python bot behavior)
     if (fieldType === 'textarea') {
-      const fallbackText = this.profile.summary || this.profile.headline || 'Not applicable.';
-      this.pushLog(`[Fallback] textarea -> profile summary (${fallbackText.slice(0, 40)}...)`);
-      this.stats.rule++;
-      return { answer: fallbackText, source: 'rule' };
-    }
-
-    if (['radio', 'select', 'aria-radio', 'checkbox_group'].includes(fieldType) && options.length) {
-      const firstOption = options[0];
-      this.pushLog(`[Fallback] defaulted to first option: '${firstOption}' for: '${questionText}'`);
-      this.stats.rule++;
-      return { answer: firstOption, source: 'rule' };
+      const fallbackText = this.profile.summary || this.profile.headline || '';
+      if (fallbackText && isProfileSummaryStyleQuestion(questionText)) {
+        this.pushLog(`[Fallback] profile-summary textarea -> (${fallbackText.slice(0, 40)}...)`);
+        this.stats.profile++;
+        return { answer: fallbackText, source: 'profile' };
+      }
     }
 
     if (['text', 'email', 'tel', 'url'].includes(fieldType)) {

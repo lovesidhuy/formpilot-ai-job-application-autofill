@@ -916,6 +916,18 @@ function collectStepFields(route = getCurrentStep(), pageType) {
     return [];
   }
 
+  if (route.step === 'ATS_FORM') {
+    if (route.platform === 'lever' && typeof harvestLeverFields === 'function') {
+      return harvestLeverFields(pageType);
+    }
+    if (route.platform === 'greenhouse' && typeof harvestGreenhouseFields === 'function') {
+      return harvestGreenhouseFields(pageType);
+    }
+    if (route.platform === 'workday' && typeof harvestWorkdayFields === 'function') {
+      return harvestWorkdayFields(pageType);
+    }
+  }
+
   const harvester = STEP_HARVESTERS[route.step];
   if (!harvester) return null;
 
